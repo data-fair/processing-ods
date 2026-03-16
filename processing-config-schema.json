@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ODS Import Processing Config",
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string",
+      "title": "URL",
+      "description": "The URL of the API",
+      "pattern": "^https?://.*[^/]$",
+      "errorMessage": "The URL must start with http:// or https:// and must not end with a slash",
+      "examples": ["https://data.mon-domaine.fr"]
+    }
+  },
+  "required": ["url"]
+}

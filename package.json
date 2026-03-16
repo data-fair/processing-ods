@@ -1,0 +1,41 @@
+{
+  "name": "@data-fair/processing-ods",
+  "version": "0.0.0",
+  "description": "Plugin for data-fair-processings to import datasets from an ODS portal into Data-Fair.",
+  "main": "index.ts",
+  "scripts": {
+    "lint": "eslint .",
+    "lint-fix": "eslint --fix .",
+    "build-types": "export NODE_OPTIONS='--experimental-strip-types' && df-build-types ./",
+    "test-base": "NODE_ENV=test node --experimental-strip-types --test-force-exit --test-concurrency=1 --test --test-reporter=spec --test-reporter-destination=stdout",
+    "test": "npm run test-base test-it/*.ts"
+  },
+  "keywords": [
+    "data-fair-processings-plugin"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
+    "@data-fair/lib-common-types": "^1.10.1",
+    "@data-fair/lib-processing-dev": "^0.2.0",
+    "@types/config": "^3.3.5",
+    "@types/node": "^22.15.17",
+    "config": "^3.3.12",
+    "debug": "^4.4.0",
+    "eslint": "^9.26.0",
+    "husky": "^9.1.7",
+    "neostandard": "^0.12.1",
+    "typescript": "^5.8.3",
+    "ws": "^8.19.0"
+  },
+  "files": [
+    "plugin-config-schema.json",
+    "processing-config-schema.json",
+    "./lib/**/*"
+  ],
+  "dependencies": {
+    "form-data": "^4.0.5"
+  }
+}
