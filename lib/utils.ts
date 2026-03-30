@@ -1,18 +1,28 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
-import type { OdsDataset } from './types.ts'
+import type { OdsDataset, ProcessingConfig, DFTopic } from './types.ts'
+import { mapFrequency, parseTemporal, mapTopics } from './mappings.ts'
 
 import path from 'path'
 import fs from 'fs'
 
 export const fetchOdsDatasets = async (portalUrl: string, axios: any): Promise<OdsDataset[]> => {
-  const apiUrl = portalUrl + '/api/explore/v2.1/catalog/datasets?select=exclude(attachments),exclude(alternative_exports),exclude(fields)'
-  const res = await axios.get(apiUrl)
-  if (!res.data || !Array.isArray(res.data.results)) throw new Error('Réponse inattendue de l\'API ODS')
-  return res.data.results
+  const datasets: OdsDataset[] = []
+  const limit = 100
+  let offset = 0
+
+  while (true) {
+    const apiUrl = `${portalUrl}/api/explore/v2.1/catalog/datasets?select=exclude(attachments),exclude(alternative_exports)&limit=${limit}&offset=${offset}`
+    const res = await axios.get(apiUrl)
+    if (!res.data || !Array.isArray(res.data.results)) throw new Error('Réponse inattendue de l\'API ODS')
+    datasets.push(...res.data.results)
+    if (datasets.length >= res.data.total_count || res.data.results.length < limit) break
+    offset += limit
+  }
+
+  return datasets
 }
 
-// Génère le body FormData pour Data-Fair à partir d'un dataset ODS (métadonnées uniquement, pas de fichier)
-export const getMetadata = (odsDataset: any, portalUrl: string): Record<string, any> => {
+export const getMetadata = (odsDataset: OdsDataset, portalUrl: string, topicsMap?: Map<string, DFTopic>): Record<string, any> => {
   const dataset: Record<string, any> = {
     slug: odsDataset.dataset_id,
     title: odsDataset.metas?.default?.title ?? '',
@@ -21,16 +31,42 @@ export const getMetadata = (odsDataset: any, portalUrl: string): Record<string, 
     origin: portalUrl + '/explore/dataset/' + odsDataset.dataset_id,
     analysis: { escapeKeyAlgorithm: 'compat-ods' },
   }
+
   if (odsDataset.metas?.default?.license && odsDataset.metas?.default?.license_url) {
     dataset.license = {
       title: odsDataset.metas.default.license,
-      href: odsDataset.metas.default.license_url
+      href: odsDataset.metas.default.license_url,
     }
   }
-  // Génération du schéma comme dans download.ts
+
+  // Topics
+  if (topicsMap) {
+    const topics = mapTopics(odsDataset.metas?.default?.theme, topicsMap)
+    if (topics.length > 0) dataset.topics = topics
+  }
+
+  // Modified date
+  const modified = odsDataset.metas?.default?.modified || odsDataset.metas?.default?.metadata_processed
+  if (modified) dataset.modified = modified
+
+  // DCAT metadata
+  const dcat = odsDataset.metas?.dcat
+  if (dcat) {
+    if (dcat.spatial) dataset.spatial = dcat.spatial
+    const temporal = parseTemporal(dcat.temporal)
+    if (temporal) dataset.temporal = temporal
+    const frequency = mapFrequency(dcat.accrualperiodicity)
+    if (frequency) dataset.frequency = frequency
+    if (dcat.creator) dataset.creator = dcat.creator
+  }
+
+  // Image (thumbnail URL)
+  dataset.image = `${portalUrl}/api/explore/v2.1/catalog/datasets/${odsDataset.dataset_id}/thumbnail`
+
+  // Schema
   const fields = odsDataset.fields || []
-  const containsGeoShape = fields.some((field: any) => field.type === 'geo_shape')
-  dataset.schema = fields.map((OdsField: any) => {
+  const containsGeoShape = fields.some((field) => field.type === 'geo_shape')
+  dataset.schema = fields.map((OdsField) => {
     const geoFormat: { [key: string]: any } = {}
     if (OdsField.type === 'geo_point_2d' && !containsGeoShape) {
       geoFormat['x-refersTo'] = 'http://www.w3.org/2003/01/geo/wgs84_pos#lat_long'
@@ -41,13 +77,14 @@ export const getMetadata = (odsDataset: any, portalUrl: string): Record<string, 
       key: OdsField.name,
       description: OdsField.description ?? '',
       title: OdsField.label,
-      ...geoFormat
+      ...geoFormat,
     }
   })
+
   return dataset
 }
 
-export const downloadCSV = async (odsDataset: OdsDataset, context: ProcessingContext<{ url: string }>): Promise<string> => {
+export const downloadCSV = async (odsDataset: OdsDataset, context: ProcessingContext<ProcessingConfig>): Promise<string> => {
   const { processingConfig: { url: portalUrl }, axios, log, tmpDir } = context
 
   const url = `${portalUrl}/api/explore/v2.1/catalog/datasets/${odsDataset.dataset_id}/exports/csv?compressed=true`

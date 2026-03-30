@@ -1,3 +1,30 @@
+// Account reference from getItems
+export type AccountRef = {
+  type: string
+  id: string
+  name?: string
+}
+
+// Processing config
+export type ProcessingConfig = {
+  url: string
+  account: AccountRef
+}
+
+// Data-Fair topic
+export type DFTopic = {
+  id: string
+  title: string
+  color?: string
+  icon?: any
+}
+
+// Data-Fair license
+export type DFLicense = {
+  title: string
+  href: string
+}
+
 // Types for ODS Dataset (copied from catalog-ods)
 export type OdsDataset = {
   dataset_id: string;
@@ -20,6 +47,21 @@ export type OdsDataset = {
       license?: string;
       license_url?: string;
       theme?: string[];
+      modified?: string;
+      metadata_processed?: string;
+      [k: string]: unknown;
+    };
+    dcat?: {
+      spatial?: string;
+      temporal?: string;
+      accrualperiodicity?: string;
+      creator?: string;
+      [k: string]: unknown;
+    };
+    custom?: {
+      [k: string]: unknown;
+    };
+    inspire?: {
       [k: string]: unknown;
     };
     [k: string]: unknown;

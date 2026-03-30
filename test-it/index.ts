@@ -8,8 +8,9 @@ describe('ODS Processing', () => {
     const context = testUtils.context({
       pluginConfig: {},
       processingConfig: {
-        url: 'https://corbeil-essonnes-grandparissud.opendatasoft.com/'
-      }
+        url: 'https://corbeil-essonnes-grandparissud.opendatasoft.com',
+        account: { type: 'organization', id: 'test', name: 'Test' },
+      },
     }, config, false)
 
     await odsPlugin.run(context)
