@@ -11,32 +11,81 @@
       "errorMessage": "The URL must start with http:// or https:// and must not end with a slash",
       "examples": ["https://data.mon-domaine.fr"]
     },
-    "account": {
-      "type": "object",
-      "title": "Le compte pour modifier les settings (processings n'a pas accès au type/id du compte)",
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "enum": ["analyse", "import"],
+      "default": "analyse"
+    },
+    "themes": {
+      "type": "array",
+      "title": "",
       "layout": {
+        "if": "parent.data.mode === 'import'",
+        "comp": "list",
+        "listEditMode": "inline",
+        "density": "compact",
         "getItems": {
-          "url": "/simple-directory/api/accounts",
-          "qSearchParam": "q",
-          "itemsResults": "data.results",
-          "itemTitle": "item.name",
-          "itemKey": "item.id",
-          "itemValue": "item",
-          "itemIcon": "`/simple-directory/api/avatars/${item.type}/${item.id}/avatar.png`"
+          "url": {
+            "expr": "parent.data.url ? `${parent.data.url}/api/explore/v2.1/catalog/facets?facet=theme` : undefined",
+            "type": "js-eval"
+          },
+          "itemsResults": "data.facets[0]?.facets",
+          "itemKey": "item.value"
         }
       },
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "type": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
+      "items": {
+        "type": "object",
+        "required": ["value", "dataFairThemes"],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Thème ODS",
+            "readOnly": true,
+            "layout": {
+              "cols": 6
+            }
+          },
+          "dataFairThemes": {
+            "type": "array",
+            "title": "Thèmes Data Fair",
+            "default": [],
+            "layout": {
+              "props": {
+                "clearable": true
+              },
+              "cols": 6,
+              "getItems": {
+                "url": "/data-fair/api/v1/settings/${context.owner.type}/${context.owner.id}/topics",
+                "itemsResults": "data",
+                "itemKey": "item.title",
+                "itemTitle": "item.title",
+                "itemIcon": "item.icon?.svg"
+              }
+            },
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["title"],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "color": {
+                  "type": "string"
+                },
+                "icon": {
+                  "type": "object"
+                }
+              }
+            }
+          }
         }
       }
     }
   },
-  "required": ["url", "account"]
+  "required": ["url", "mode"]
 }

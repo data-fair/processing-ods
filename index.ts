@@ -1,68 +1,88 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
-import type { ProcessingConfig, DFLicense } from './lib/types.ts'
+import type { ProcessingConfig } from './lib/types.ts'
 import { fetchOdsDatasets, getMetadata, downloadCSV } from './lib/utils.ts'
-import { activateMetadataFields, syncTopics, syncLicenses } from './lib/settings.ts'
 import { createReadStream } from 'fs'
 import { promisify } from 'util'
 import FormData from 'form-data'
 
 const MAX_PARALLEL = 5
 
-export const run = async (context: ProcessingContext<ProcessingConfig>) => {
-  const { processingConfig, axios, log } = context
-  const { url: portalUrl } = processingConfig
+const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
+  const { processingConfig: { url: portalUrl }, axios, log } = context
 
-  // 1. Account reference
-  const accountRef = processingConfig.account
-
-  // 2. Fetch all ODS datasets (paginated)
   await log.step('Récupération de la liste des jeux de données ODS')
   const odsDatasets = await fetchOdsDatasets(portalUrl, axios)
   await log.info(`${odsDatasets.length} jeux de données trouvés sur le portail ODS`)
 
-  // 3. Sync settings
-  await log.step('Synchronisation des settings Data-Fair')
-
-  // 3a. Detect which metadata fields are actually used and activate them
-  const usedFields = new Set<string>()
-  for (const ds of odsDatasets) {
-    if (ds.metas?.default?.keyword?.length) usedFields.add('keywords')
-    if (ds.metas?.default?.modified || ds.metas?.default?.metadata_processed) usedFields.add('modified')
-    const dcat = ds.metas?.dcat
-    if (dcat) {
-      if (dcat.spatial) usedFields.add('spatial')
-      if (dcat.temporal) usedFields.add('temporal')
-      if (dcat.accrualperiodicity) usedFields.add('frequency')
-      if (dcat.creator) usedFields.add('creator')
-    }
-  }
-  await activateMetadataFields(axios, accountRef, [...usedFields])
-  if (usedFields.size > 0) await log.info(`Champs de métadonnées activés : ${[...usedFields].join(', ')}`)
-
-  // 3b. Collect unique themes and sync topics
-  const allThemes = new Set<string>()
+  // Themes report
+  await log.step('Rapport des thématiques')
+  const themeCounts = new Map<string, number>()
   for (const ds of odsDatasets) {
     for (const theme of ds.metas?.default?.theme || []) {
-      allThemes.add(theme)
+      themeCounts.set(theme, (themeCounts.get(theme) || 0) + 1)
     }
   }
-  const topicsMap = await syncTopics(axios, accountRef, [...allThemes])
-  await log.info(`${allThemes.size} thèmes synchronisés`)
+  if (themeCounts.size === 0) {
+    await log.info('Aucune thématique trouvée')
+  } else {
+    const sorted = [...themeCounts.entries()].sort((a, b) => b[1] - a[1])
+    for (const [theme, count] of sorted) {
+      await log.info(`  ${theme} : ${count} dataset(s)`)
+    }
+  }
 
-  // 3c. Collect unique licenses and sync
-  const licensesMap = new Map<string, DFLicense>()
+  // Licenses report
+  await log.step('Rapport des licences')
+  const licenses = new Map<string, { title: string, href: string, count: number }>()
   for (const ds of odsDatasets) {
     if (ds.metas?.default?.license && ds.metas?.default?.license_url) {
       const key = ds.metas.default.license_url
-      if (!licensesMap.has(key)) {
-        licensesMap.set(key, { title: ds.metas.default.license, href: ds.metas.default.license_url })
+      const existing = licenses.get(key)
+      if (existing) {
+        existing.count++
+      } else {
+        licenses.set(key, { title: ds.metas.default.license, href: ds.metas.default.license_url, count: 1 })
       }
     }
   }
-  await syncLicenses(axios, accountRef, [...licensesMap.values()])
-  await log.info(`${licensesMap.size} licences synchronisées`)
+  if (licenses.size === 0) {
+    await log.info('Aucune licence trouvée')
+  } else {
+    for (const [, lic] of licenses) {
+      await log.info(`  ${lic.title} (${lic.href}) : ${lic.count} dataset(s)`)
+    }
+  }
 
-  // 4. Import datasets in parallel
+  // DCAT metadata report
+  await log.step('Rapport des métadonnées DCAT')
+  const dcatStats = { spatial: 0, temporal: 0, frequency: 0, creator: 0, modified: 0, keywords: 0 }
+  for (const ds of odsDatasets) {
+    if (ds.metas?.default?.keyword?.length) dcatStats.keywords++
+    if (ds.metas?.default?.modified || ds.metas?.default?.metadata_processed) dcatStats.modified++
+    const dcat = ds.metas?.dcat
+    if (dcat) {
+      if (dcat.spatial) dcatStats.spatial++
+      if (dcat.temporal) dcatStats.temporal++
+      if (dcat.accrualperiodicity) dcatStats.frequency++
+      if (dcat.creator) dcatStats.creator++
+    }
+  }
+  await log.info(`  keywords : ${dcatStats.keywords} dataset(s)`)
+  await log.info(`  modified : ${dcatStats.modified} dataset(s)`)
+  await log.info(`  spatial : ${dcatStats.spatial} dataset(s)`)
+  await log.info(`  temporal : ${dcatStats.temporal} dataset(s)`)
+  await log.info(`  frequency : ${dcatStats.frequency} dataset(s)`)
+  await log.info(`  creator : ${dcatStats.creator} dataset(s)`)
+}
+
+const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
+  const { processingConfig, axios, log } = context
+  const { url: portalUrl, themes: themesMapping } = processingConfig
+
+  await log.step('Récupération de la liste des jeux de données ODS')
+  const odsDatasets = await fetchOdsDatasets(portalUrl, axios)
+  await log.info(`${odsDatasets.length} jeux de données trouvés sur le portail ODS`)
+
   await log.step('Téléchargement et upload des jeux de données')
 
   const activeDownloads = new Set()
@@ -80,8 +100,8 @@ export const run = async (context: ProcessingContext<ProcessingConfig>) => {
         // Download CSV
         const filePath = await downloadCSV(odsDataset, context)
 
-        // Build metadata with topics
-        const metadata = getMetadata(odsDataset, portalUrl, topicsMap)
+        // Build metadata with theme mapping
+        const metadata = getMetadata(odsDataset, portalUrl, themesMapping)
 
         // Check if dataset already exists
         const slug = odsDataset.dataset_id
@@ -143,4 +163,12 @@ export const run = async (context: ProcessingContext<ProcessingConfig>) => {
 
   // Wait for all downloads to complete
   while (activeDownloads.size > 0) await new Promise(resolve => setTimeout(resolve, 100))
+}
+
+export const run = async (context: ProcessingContext<ProcessingConfig>) => {
+  if (context.processingConfig.mode === 'analyse') {
+    await runAnalyse(context)
+  } else {
+    await runImport(context)
+  }
 }

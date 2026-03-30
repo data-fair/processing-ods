@@ -1,4 +1,4 @@
-import type { DFTopic } from './types.ts'
+import type { DFTopic, ThemeMapping } from './types.ts'
 
 const frequencyMap: Record<string, string> = {
   // ISO 8601 durations
@@ -35,12 +35,22 @@ export const parseTemporal = (temporal: string | undefined): { start: string, en
   return { start: parts[0], end: parts[1] }
 }
 
-export const mapTopics = (odsThemes: string[] | undefined, topicsMap: Map<string, DFTopic>): DFTopic[] => {
-  if (!odsThemes || odsThemes.length === 0) return []
+export const mapThemesToTopics = (odsThemes: string[] | undefined, mappingTable: ThemeMapping[] | undefined): DFTopic[] | undefined => {
+  if (!Array.isArray(odsThemes) || odsThemes.length === 0) return undefined
+  if (!Array.isArray(mappingTable) || mappingTable.length === 0) return undefined
+
   const topics: DFTopic[] = []
-  for (const theme of odsThemes) {
-    const topic = topicsMap.get(theme.toLowerCase())
-    if (topic) topics.push(topic)
+
+  for (const odsTheme of odsThemes) {
+    const mapping = mappingTable.find((m) => m.value === odsTheme)
+    if (mapping) {
+      for (const dfTheme of mapping.dataFairThemes) {
+        if (!topics.some(t => JSON.stringify(t) === JSON.stringify(dfTheme))) {
+          topics.push(dfTheme)
+        }
+      }
+    }
   }
-  return topics
+
+  return topics.length > 0 ? topics : undefined
 }

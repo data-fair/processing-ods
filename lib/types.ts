@@ -1,28 +1,22 @@
-// Account reference from getItems
-export type AccountRef = {
-  type: string
-  id: string
-  name?: string
+// Data-Fair topic
+export type DFTopic = {
+  id?: string
+  title: string
+  color?: string
+  icon?: object
+}
+
+// Theme mapping entry (ODS theme → Data-Fair topics)
+export type ThemeMapping = {
+  value: string
+  dataFairThemes: DFTopic[]
 }
 
 // Processing config
 export type ProcessingConfig = {
   url: string
-  account: AccountRef
-}
-
-// Data-Fair topic
-export type DFTopic = {
-  id: string
-  title: string
-  color?: string
-  icon?: any
-}
-
-// Data-Fair license
-export type DFLicense = {
-  title: string
-  href: string
+  mode: 'analyse' | 'import'
+  themes?: ThemeMapping[]
 }
 
 // Types for ODS Dataset (copied from catalog-ods)

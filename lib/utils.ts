@@ -1,6 +1,6 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
-import type { OdsDataset, ProcessingConfig, DFTopic } from './types.ts'
-import { mapFrequency, parseTemporal, mapTopics } from './mappings.ts'
+import type { OdsDataset, ProcessingConfig, ThemeMapping } from './types.ts'
+import { mapFrequency, parseTemporal, mapThemesToTopics } from './mappings.ts'
 
 import path from 'path'
 import fs from 'fs'
@@ -22,7 +22,7 @@ export const fetchOdsDatasets = async (portalUrl: string, axios: any): Promise<O
   return datasets
 }
 
-export const getMetadata = (odsDataset: OdsDataset, portalUrl: string, topicsMap?: Map<string, DFTopic>): Record<string, any> => {
+export const getMetadata = (odsDataset: OdsDataset, portalUrl: string, themesMapping?: ThemeMapping[]): Record<string, any> => {
   const dataset: Record<string, any> = {
     slug: odsDataset.dataset_id,
     title: odsDataset.metas?.default?.title ?? '',
@@ -40,10 +40,8 @@ export const getMetadata = (odsDataset: OdsDataset, portalUrl: string, topicsMap
   }
 
   // Topics
-  if (topicsMap) {
-    const topics = mapTopics(odsDataset.metas?.default?.theme, topicsMap)
-    if (topics.length > 0) dataset.topics = topics
-  }
+  const topics = mapThemesToTopics(odsDataset.metas?.default?.theme, themesMapping)
+  if (topics) dataset.topics = topics
 
   // Modified date
   const modified = odsDataset.metas?.default?.modified || odsDataset.metas?.default?.metadata_processed

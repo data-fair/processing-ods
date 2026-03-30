@@ -4,12 +4,12 @@ import testUtils from '@data-fair/lib-processing-dev/tests-utils.js'
 import * as odsPlugin from '../index.ts'
 
 describe('ODS Processing', () => {
-  it('should upload at least one dataset from Corbeil-Essonnes ODS', async function () {
+  it('should analyse datasets from Corbeil-Essonnes ODS', async function () {
     const context = testUtils.context({
       pluginConfig: {},
       processingConfig: {
         url: 'https://corbeil-essonnes-grandparissud.opendatasoft.com',
-        account: { type: 'organization', id: 'test', name: 'Test' },
+        mode: 'analyse',
       },
     }, config, false)
 
