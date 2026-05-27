@@ -16,6 +16,7 @@ export type ThemeMapping = {
 export type ProcessingConfig = {
   url: string
   mode: 'analyse' | 'import'
+  haveList?: boolean
   themes?: ThemeMapping[]
 }
 

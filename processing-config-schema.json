@@ -1,84 +1,153 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ODS Import Processing Config",
   "type": "object",
-  "properties": {
-    "url": {
-      "type": "string",
-      "title": "URL",
-      "description": "The URL of the API",
-      "pattern": "^https?://.*[^/]$",
-      "errorMessage": "The URL must start with http:// or https:// and must not end with a slash",
-      "examples": ["https://data.mon-domaine.fr"]
-    },
-    "mode": {
-      "type": "string",
-      "title": "Mode",
-      "enum": ["analyse", "import"],
-      "default": "analyse"
-    },
-    "themes": {
-      "type": "array",
-      "title": "",
+  "layout": "tabs",
+  "required": ["mode", "url"],
+  "allOf": [
+    {
+      "title": "Action",
+      "x-i18n-title": { "fr": "Action" },
       "layout": {
-        "if": "parent.data.mode === 'import'",
-        "comp": "list",
-        "listEditMode": "inline",
-        "density": "compact",
-        "getItems": {
-          "url": {
-            "expr": "parent.data.url ? `${parent.data.url}/api/explore/v2.1/catalog/facets?facet=theme` : undefined",
-            "type": "js-eval"
+        "children": [
+          "mode",
+          {
+            "if": "data.mode === 'analyse'",
+            "children": [
+              {
+                "markdown": "First step: produces a report on themes, licenses and metadata of the ODS portal. Provides `fetch` snippets ready to paste in the browser console to create the missing topics and licenses in Data-Fair. At the end of the analysis, the \"Import datasets\" option becomes available.",
+                "x-i18n-markdown": {
+                  "fr": "Première étape : produit un rapport des thématiques, licences et métadonnées du portail ODS. Fournit les snippets `fetch` prêts à coller dans la console du navigateur pour créer les thématiques et licences manquantes dans Data-Fair. À la fin de l'analyse, l'option « Importer les jeux de données » devient disponible."
+                }
+              }
+            ]
           },
-          "itemsResults": "data.facets[0]?.facets",
-          "itemKey": "item.value"
-        }
+          {
+            "if": "data.mode === 'import'",
+            "children": [
+              {
+                "markdown": "Second step: downloads and synchronises ODS datasets into Data-Fair. Configure the theme mapping in the dedicated tab before running.",
+                "x-i18n-markdown": {
+                  "fr": "Seconde étape : télécharge et synchronise les jeux de données ODS vers Data-Fair. Configurez le mapping des thématiques dans l'onglet correspondant avant de lancer."
+                }
+              }
+            ]
+          }
+        ]
       },
-      "items": {
-        "type": "object",
-        "required": ["value", "dataFairThemes"],
-        "properties": {
-          "value": {
-            "type": "string",
-            "title": "Thème ODS",
-            "readOnly": true,
-            "layout": {
-              "cols": 6
+      "properties": {
+        "mode": {
+          "type": "string",
+          "title": "Mode",
+          "default": "analyse",
+          "oneOf": [
+            {
+              "const": "analyse",
+              "title": "Analyse portal",
+              "x-i18n-title": { "fr": "Analyser le portail" }
+            },
+            {
+              "const": "import",
+              "title": "Import datasets",
+              "x-i18n-title": { "fr": "Importer les jeux de données" },
+              "layout": { "if": "parent.data.haveList" }
+            }
+          ]
+        },
+        "haveList": {
+          "type": "boolean",
+          "layout": "none"
+        }
+      }
+    },
+    {
+      "title": "Parameters",
+      "x-i18n-title": { "fr": "Paramètres" },
+      "required": ["url"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "ODS portal URL",
+          "x-i18n-title": { "fr": "URL du portail ODS" },
+          "description": "Root URL of the ODS portal, no trailing slash.",
+          "x-i18n-description": {
+            "fr": "URL racine du portail ODS, sans slash final."
+          },
+          "pattern": "^https?://.*[^/]$",
+          "errorMessage": "The URL must start with http:// or https:// and must not end with a slash",
+          "examples": ["https://data.mon-domaine.fr"]
+        }
+      }
+    },
+    {
+      "title": "Theme mapping",
+      "x-i18n-title": { "fr": "Mapping des thématiques" },
+      "layout": {
+        "if": "parent.data.mode === 'import' && parent.data.haveList",
+        "children": [
+          {
+            "markdown": "You can link one (or several) Data Fair themes to each ODS theme. These topics must first be created in Data Fair, either from the <a href=\"/data-fair/settings\" target=\"_blank\" rel=\"noopener noreferrer\"><strong>Topics</strong></a> tab in the settings, or via the snippets provided by the portal analysis step.",
+            "x-i18n-markdown": {
+              "fr": "Vous pouvez associer pour chaque <strong>thème ODS</strong> une ou plusieurs <strong>thématiques Data Fair</strong>. Ces thématiques doivent être préalablement créées sur Data Fair, soit depuis l'onglet <a href=\"/data-fair/settings\" target=\"_blank\" rel=\"noopener noreferrer\"><strong>Thématiques</strong></a> dans les paramètres, soit via les snippets fournis par l'étape d'analyse du portail."
             }
           },
-          "dataFairThemes": {
-            "type": "array",
-            "title": "Thèmes Data Fair",
-            "default": [],
-            "layout": {
-              "props": {
-                "clearable": true
+          "themes"
+        ]
+      },
+      "properties": {
+        "themes": {
+          "type": "array",
+          "title": "",
+          "layout": {
+            "comp": "list",
+            "listEditMode": "inline",
+            "density": "compact",
+            "getItems": {
+              "url": {
+                "expr": "parent.data.url ? `${parent.data.url}/api/explore/v2.1/catalog/facets?facet=theme` : undefined",
+                "type": "js-eval"
               },
-              "cols": 6,
-              "getItems": {
-                "url": "/data-fair/api/v1/settings/${context.owner.type}/${context.owner.id}/topics",
-                "itemsResults": "data",
-                "itemKey": "item.title",
-                "itemTitle": "item.title",
-                "itemIcon": "item.icon?.svg"
-              }
-            },
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["title"],
-              "properties": {
-                "id": {
-                  "type": "string"
+              "itemsResults": "data.facets[0]?.facets",
+              "itemKey": "item.value"
+            }
+          },
+          "items": {
+            "type": "object",
+            "required": ["value", "dataFairThemes"],
+            "layout": { "readOnlyPropertiesMode": "show" },
+            "properties": {
+              "value": {
+                "type": "string",
+                "title": "ODS theme",
+                "x-i18n-title": { "fr": "Thème ODS" },
+                "readOnly": true,
+                "layout": { "cols": 6 }
+              },
+              "dataFairThemes": {
+                "type": "array",
+                "title": "Data Fair topics",
+                "x-i18n-title": { "fr": "Thèmes Data Fair" },
+                "default": [],
+                "layout": {
+                  "props": { "clearable": true },
+                  "cols": 6,
+                  "getItems": {
+                    "url": "/data-fair/api/v1/settings/${context.owner.type}/${context.owner.id}/topics",
+                    "itemsResults": "data",
+                    "itemKey": "item.title",
+                    "itemTitle": "item.title",
+                    "itemIcon": "item.icon?.svg"
+                  }
                 },
-                "title": {
-                  "type": "string"
-                },
-                "color": {
-                  "type": "string"
-                },
-                "icon": {
-                  "type": "object"
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["title"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "color": { "type": "string" },
+                    "icon": { "type": "object" }
+                  }
                 }
               }
             }
@@ -86,6 +155,5 @@
         }
       }
     }
-  },
-  "required": ["url", "mode"]
+  ]
 }

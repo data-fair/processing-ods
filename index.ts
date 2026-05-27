@@ -7,8 +7,76 @@ import FormData from 'form-data'
 
 const MAX_PARALLEL = 5
 
+const buildTopicsSnippet = (topicTitles: string[]): string => {
+  const proposed = topicTitles.map(title => ({ title }))
+  return `// Sur la page Data-Fair (n'importe laquelle, vous devez être connecté), ouvrez la console du navigateur (F12) et collez ce snippet :
+(async () => {
+  const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null);
+  const account = session && session.account;
+  if (!account || !account.type || !account.id) {
+    console.error("Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez.");
+    return;
+  }
+  const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id;
+  const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`;
+  const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json());
+  const proposed = ${JSON.stringify(proposed, null, 2).replace(/\n/g, '\n  ')};
+  const existing = new Set((settings.topics || []).map(t => t.title));
+  const toAdd = proposed.filter(t => !existing.has(t.title));
+  if (!toAdd.length) {
+    console.log("Aucune nouvelle thématique à ajouter.");
+    return;
+  }
+  const res = await fetch(baseUrl, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ topics: [...(settings.topics || []), ...toAdd] })
+  });
+  if (!res.ok) {
+    console.error('Erreur PATCH', res.status, await res.text());
+    return;
+  }
+  console.log(\`\${toAdd.length} thématique(s) ajoutée(s) :\`, toAdd.map(t => t.title));
+})();`
+}
+
+const buildLicensesSnippet = (licenses: { title: string, href: string }[]): string => {
+  return `// Sur la page Data-Fair (n'importe laquelle, vous devez être connecté), ouvrez la console du navigateur (F12) et collez ce snippet :
+(async () => {
+  const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null);
+  const account = session && session.account;
+  if (!account || !account.type || !account.id) {
+    console.error("Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez.");
+    return;
+  }
+  const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id;
+  const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`;
+  const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json());
+  const proposed = ${JSON.stringify(licenses, null, 2).replace(/\n/g, '\n  ')};
+  const existing = new Set((settings.licenses || []).map(l => l.href));
+  const toAdd = proposed.filter(l => !existing.has(l.href));
+  if (!toAdd.length) {
+    console.log("Aucune nouvelle licence à ajouter.");
+    return;
+  }
+  const res = await fetch(baseUrl, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ licenses: [...(settings.licenses || []), ...toAdd] })
+  });
+  if (!res.ok) {
+    console.error('Erreur PATCH', res.status, await res.text());
+    return;
+  }
+  console.log(\`\${toAdd.length} licence(s) ajoutée(s) :\`, toAdd.map(l => l.title));
+})();`
+}
+
 const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
-  const { processingConfig: { url: portalUrl }, axios, log } = context
+  const { processingConfig, axios, log, patchConfig } = context
+  const { url: portalUrl } = processingConfig
 
   await log.step('Récupération de la liste des jeux de données ODS')
   const odsDatasets = await fetchOdsDatasets(portalUrl, axios)
@@ -29,6 +97,7 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
     for (const [theme, count] of sorted) {
       await log.info(`  ${theme} : ${count} dataset(s)`)
     }
+    await log.info('Commande à exécuter pour créer ces thématiques dans Data-Fair disponible en extra', buildTopicsSnippet(sorted.map(([t]) => t)))
   }
 
   // Licenses report
@@ -51,28 +120,35 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
     for (const [, lic] of licenses) {
       await log.info(`  ${lic.title} (${lic.href}) : ${lic.count} dataset(s)`)
     }
+    const licenseList = [...licenses.values()].map(({ title, href }) => ({ title, href }))
+    await log.info('Commande à exécuter pour créer ces licences dans Data-Fair disponible en extra', buildLicensesSnippet(licenseList))
   }
 
-  // DCAT metadata report
-  await log.step('Rapport des métadonnées DCAT')
-  const dcatStats = { spatial: 0, temporal: 0, frequency: 0, creator: 0, modified: 0, keywords: 0 }
+  // Metadata report
+  await log.step('Rapport des métadonnées')
+  const metaStats = { spatial: 0, temporal: 0, frequency: 0, creator: 0, modified: 0, keywords: 0 }
   for (const ds of odsDatasets) {
-    if (ds.metas?.default?.keyword?.length) dcatStats.keywords++
-    if (ds.metas?.default?.modified || ds.metas?.default?.metadata_processed) dcatStats.modified++
+    if (ds.metas?.default?.keyword?.length) metaStats.keywords++
+    if (ds.metas?.default?.modified || ds.metas?.default?.metadata_processed) metaStats.modified++
     const dcat = ds.metas?.dcat
     if (dcat) {
-      if (dcat.spatial) dcatStats.spatial++
-      if (dcat.temporal) dcatStats.temporal++
-      if (dcat.accrualperiodicity) dcatStats.frequency++
-      if (dcat.creator) dcatStats.creator++
+      if (dcat.spatial) metaStats.spatial++
+      if (dcat.temporal) metaStats.temporal++
+      if (dcat.accrualperiodicity) metaStats.frequency++
+      if (dcat.creator) metaStats.creator++
     }
   }
-  await log.info(`  keywords : ${dcatStats.keywords} dataset(s)`)
-  await log.info(`  modified : ${dcatStats.modified} dataset(s)`)
-  await log.info(`  spatial : ${dcatStats.spatial} dataset(s)`)
-  await log.info(`  temporal : ${dcatStats.temporal} dataset(s)`)
-  await log.info(`  frequency : ${dcatStats.frequency} dataset(s)`)
-  await log.info(`  creator : ${dcatStats.creator} dataset(s)`)
+  await log.info(`  Couverture spatiale : ${metaStats.spatial} dataset(s)`)
+  await log.info(`  Couverture temporelle : ${metaStats.temporal} dataset(s)`)
+  await log.info(`  Fréquence de mise à jour : ${metaStats.frequency} dataset(s)`)
+  await log.info(`  Personne ou organisme créateur : ${metaStats.creator} dataset(s)`)
+  await log.info(`  Date de modification de la source : ${metaStats.modified} dataset(s)`)
+  await log.info(`  Mots clés : ${metaStats.keywords} dataset(s)`)
+
+  // Switch to import mode and unlock the "Importer" action.
+  await log.step('Activation du mode import')
+  await patchConfig({ mode: 'import', haveList: true } as any)
+  await log.info('Basculé en mode "Importer les jeux de données". Configurez le mapping des thématiques dans l\'onglet correspondant.')
 }
 
 const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
