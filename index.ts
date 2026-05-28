@@ -7,6 +7,10 @@ import FormData from 'form-data'
 
 const MAX_PARALLEL = 5
 
+// True when an interruption is requested for this processing.
+// Set by the exported `stop` function, checked in long-running loops to exit gracefully.
+let shouldBeStopped = false
+
 // Single-quoted JS string literal, with proper escaping (used to avoid any
 // double-quote in the snippet — when stored as JSON in the log "extra" field,
 // double quotes get escaped to \" and break copy-paste into the browser console).
@@ -127,7 +131,12 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
   const totalDatasets = odsDatasets.length
 
   for (const odsDataset of odsDatasets) {
-    while (activeDownloads.size >= MAX_PARALLEL) await new Promise(resolve => setTimeout(resolve, 100))
+    if (shouldBeStopped) break
+    while (activeDownloads.size >= MAX_PARALLEL) {
+      if (shouldBeStopped) break
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    if (shouldBeStopped) break
     activeDownloads.add(odsDataset.dataset_id)
 
     const processDataset = async () => {
@@ -199,14 +208,22 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
     processDataset()
   }
 
-  // Wait for all downloads to complete
+  // Wait for in-flight downloads/uploads to finish (so we don't leave half-written state)
   while (activeDownloads.size > 0) await new Promise(resolve => setTimeout(resolve, 100))
+
+  if (shouldBeStopped) {
+    await log.warning(`Traitement interrompu — ${completedCount}/${totalDatasets} jeux de données traités`)
+  }
 }
 
 export const run = async (context: ProcessingContext<ProcessingConfig>) => {
+  shouldBeStopped = false
   if (context.processingConfig.mode === 'analyse') {
     await runAnalyse(context)
   } else {
     await runImport(context)
   }
 }
+
+// Sets `shouldBeStopped = true` so that `run` exits gracefully at the next checkpoint.
+export const stop = async () => { shouldBeStopped = true }
