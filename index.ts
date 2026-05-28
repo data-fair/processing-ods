@@ -180,7 +180,10 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
 
         results.push({ datasetId: odsDataset.dataset_id, success: true })
       } catch (err: any) {
-        await log.error(`Erreur pour ${odsDataset.dataset_id}: ${err.message}`)
+        const detail = err.response?.data
+        const detailStr = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : ''
+        const stage = err.response ? "lors de l'upload vers Data-Fair" : 'lors du téléchargement depuis ODS'
+        await log.error(`Erreur ${stage} pour ${odsDataset.dataset_id}: ${err.message}`, detailStr)
         results.push({ datasetId: odsDataset.dataset_id, success: false, error: err.message })
       } finally {
         activeDownloads.delete(odsDataset.dataset_id)
