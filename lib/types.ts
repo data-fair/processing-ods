@@ -31,6 +31,7 @@ export type ProcessingConfig = {
   haveList?: boolean
   themes?: ThemeMapping[]
   licenses?: LicenseMapping[]
+  relatedDatasetsThreshold?: number
 }
 
 // Types for ODS Dataset (copied from catalog-ods)

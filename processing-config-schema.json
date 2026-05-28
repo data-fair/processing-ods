@@ -75,6 +75,17 @@
           "pattern": "^https?://.*[^/]$",
           "errorMessage": "The URL must start with http:// or https:// and must not end with a slash",
           "examples": ["https://data.mon-domaine.fr"]
+        },
+        "relatedDatasetsThreshold": {
+          "type": "number",
+          "title": "Related datasets — minimum similarity score",
+          "x-i18n-title": { "fr": "Jeux de données liés — score de similarité minimum" },
+          "description": "Score threshold (ODS dataset_similarity) above which a dataset is added to relatedDatasets. Set to 0 to disable related datasets import. ODS portals typically use 1.5–2.0.",
+          "x-i18n-description": {
+            "fr": "Seuil de similarité (dataset_similarity ODS) à partir duquel un jeu de données est ajouté à relatedDatasets. Mettre 0 pour désactiver l'import des jeux de données liés. Les portails ODS utilisent typiquement 1.5–2.0."
+          },
+          "default": 1.5,
+          "minimum": 0
         }
       }
     },

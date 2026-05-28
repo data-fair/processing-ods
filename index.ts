@@ -116,7 +116,7 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
 
 const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
   const { processingConfig, axios, log } = context
-  const { url: portalUrl, themes: themesMapping, licenses: licensesMapping } = processingConfig
+  const { url: portalUrl, themes: themesMapping, licenses: licensesMapping, relatedDatasetsThreshold } = processingConfig
 
   await log.step('Récupération de la liste des jeux de données ODS')
   const odsDatasets = await fetchOdsDatasets(portalUrl, axios)
@@ -225,6 +225,70 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
 
   if (shouldBeStopped) {
     await log.warning(`Traitement interrompu — ${completedCount}/${totalDatasets} jeux de données traités`)
+    return
+  }
+
+  // Related datasets — uses ODS dataset_similarity scoring.
+  if (relatedDatasetsThreshold && relatedDatasetsThreshold > 0) {
+    await log.step('Construction des jeux de données liés')
+    // Title lookup for successfully imported datasets (we reuse what we already have in memory).
+    const importedTitles = new Map<string, string>()
+    const successIds = new Set(results.filter(r => r.success).map(r => r.datasetId))
+    for (const ds of odsDatasets) {
+      if (successIds.has(ds.dataset_id)) {
+        importedTitles.set(ds.dataset_id, ds.metas?.default?.title ?? ds.dataset_id)
+      }
+    }
+    const targets = [...importedTitles.keys()]
+    await log.info(`Recherche des jeux similaires (seuil ${relatedDatasetsThreshold}, limite 3) pour ${targets.length} jeux de données`)
+
+    const activeRelated = new Set<string>()
+    let relatedDone = 0
+    let relatedWithLinks = 0
+    for (const datasetId of targets) {
+      if (shouldBeStopped) break
+      while (activeRelated.size >= MAX_PARALLEL) {
+        if (shouldBeStopped) break
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      if (shouldBeStopped) break
+      activeRelated.add(datasetId)
+
+      const processRelated = async () => {
+        try {
+          const params = new URLSearchParams({
+            where: `not(datasetid = "${datasetId}")`,
+            select: 'datasetid,score() as score',
+            order_by: `dataset_similarity("${datasetId}")`,
+            limit: '3'
+          })
+          const url = `${portalUrl}/api/explore/v2.1/catalog/datasets?${params.toString()}`
+          const res = await axios.get(url)
+          const matches = (res.data?.results || [])
+            .filter((r: any) => typeof r.score === 'number' && r.score >= relatedDatasetsThreshold)
+            .map((r: any) => r.datasetid)
+            .filter((id: string) => importedTitles.has(id))
+          if (matches.length) {
+            const relatedDatasets = matches.map((id: string) => ({ id, title: importedTitles.get(id) as string }))
+            await axios.patch(`api/v1/datasets/${datasetId}`, { relatedDatasets })
+            relatedWithLinks++
+          }
+        } catch (err: any) {
+          const detail = err.response?.data
+          const detailStr = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : ''
+          await log.error(`Erreur lors de la résolution des jeux liés pour ${datasetId}: ${err.message}`, detailStr)
+        } finally {
+          activeRelated.delete(datasetId)
+          relatedDone++
+          await log.progress('Jeux de données liés', relatedDone, targets.length)
+        }
+      }
+
+      processRelated()
+    }
+
+    while (activeRelated.size > 0) await new Promise(resolve => setTimeout(resolve, 100))
+    await log.info(`Jeux liés ajoutés sur ${relatedWithLinks}/${targets.length} jeux de données`)
   }
 }
 
