@@ -175,16 +175,28 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
         const result = await uploadResponse.data
         await log.info(`${datasetExists ? 'Mise à jour' : 'Création'} réussie: ${result.title} (ID: ${result.id})`)
 
-        // Try to set image from ODS thumbnail
-        if (metadata.image) {
-          try {
-            const thumbRes = await axios.get(metadata.image, { responseType: 'arraybuffer', validateStatus: (s: number) => s < 400 })
-            if (thumbRes.status === 200) {
-              await axios.patch(`api/v1/datasets/${result.id}`, { image: metadata.image })
-            }
-          } catch {
-            // Thumbnail not available, skip
+        // Image: if ODS exposes a thumbnail for this dataset, fetch it and attach it to the
+        // Data-Fair dataset (we don't keep an ODS-hosted URL, since the goal is a clean migration).
+        const thumbUrl = `${portalUrl}/api/explore/v2.1/catalog/datasets/${odsDataset.dataset_id}/thumbnail`
+        try {
+          const thumbRes = await axios.get(thumbUrl, { responseType: 'arraybuffer', validateStatus: (s: number) => s < 500 })
+          const ctRaw = thumbRes.headers?.['content-type']
+          const ct = typeof ctRaw === 'string' ? ctRaw : ''
+          if (thumbRes.status === 200 && ct.startsWith('image/')) {
+            const ext = ct.split('/')[1].split(';')[0].split('+')[0] || 'png'
+            const attachmentName = `thumbnail.${ext}`
+            const attachForm = new FormData()
+            attachForm.append('attachment', Buffer.from(thumbRes.data), { filename: attachmentName, contentType: ct })
+            const attachLen = await promisify(attachForm.getLength.bind(attachForm))()
+            await axios.post(`api/v1/datasets/${result.id}/metadata-attachments`, attachForm, {
+              maxContentLength: Infinity,
+              maxBodyLength: Infinity,
+              headers: { ...attachForm.getHeaders(), 'content-length': attachLen.toString() }
+            })
+            await axios.patch(`api/v1/datasets/${result.id}`, { image: `api/v1/datasets/${result.id}/metadata-attachments/${attachmentName}` })
           }
+        } catch {
+          // Thumbnail not available or upload failed, skip silently
         }
 
         results.push({ datasetId: odsDataset.dataset_id, success: true })

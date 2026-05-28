@@ -33,8 +33,15 @@ export const getMetadata = (
     title: odsDataset.metas?.default?.title ?? '',
     description: odsDataset.metas?.default?.description ?? '',
     keywords: odsDataset.metas?.default?.keyword ?? [],
-    origin: portalUrl + '/explore/dataset/' + odsDataset.dataset_id,
     analysis: { escapeKeyAlgorithm: 'compat-ods' },
+  }
+
+  // Origin is set only if ODS exposes an explicit source reference. The processing is meant
+  // for migrations, so the ODS portal URL itself is not the provenance.
+  const references = odsDataset.metas?.default?.references
+  const referencesStr = Array.isArray(references) ? references.find(r => typeof r === 'string' && /^https?:\/\//.test(r)) : references
+  if (typeof referencesStr === 'string' && /^https?:\/\//.test(referencesStr)) {
+    dataset.origin = referencesStr
   }
 
   const license = mapLicense(
@@ -63,8 +70,7 @@ export const getMetadata = (
     if (dcat.creator) dataset.creator = dcat.creator
   }
 
-  // Image (thumbnail URL)
-  dataset.image = `${portalUrl}/api/explore/v2.1/catalog/datasets/${odsDataset.dataset_id}/thumbnail`
+  // Image is handled after dataset creation (try ODS thumbnail, attach to Data-Fair if hosted on ODS)
 
   // Schema
   const fields = odsDataset.fields || []

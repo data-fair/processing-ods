@@ -57,6 +57,7 @@ export type OdsDataset = {
       theme?: string[];
       modified?: string;
       metadata_processed?: string;
+      references?: string | string[];
       [k: string]: unknown;
     };
     dcat?: {
