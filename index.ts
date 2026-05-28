@@ -8,70 +8,12 @@ import FormData from 'form-data'
 const MAX_PARALLEL = 5
 
 const buildTopicsSnippet = (topicTitles: string[]): string => {
-  const proposed = topicTitles.map(title => ({ title }))
-  return `// Sur la page Data-Fair (n'importe laquelle, vous devez être connecté), ouvrez la console du navigateur (F12) et collez ce snippet :
-(async () => {
-  const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null);
-  const account = session && session.account;
-  if (!account || !account.type || !account.id) {
-    console.error("Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez.");
-    return;
-  }
-  const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id;
-  const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`;
-  const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json());
-  const proposed = ${JSON.stringify(proposed, null, 2).replace(/\n/g, '\n  ')};
-  const existing = new Set((settings.topics || []).map(t => t.title));
-  const toAdd = proposed.filter(t => !existing.has(t.title));
-  if (!toAdd.length) {
-    console.log("Aucune nouvelle thématique à ajouter.");
-    return;
-  }
-  const res = await fetch(baseUrl, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ topics: [...(settings.topics || []), ...toAdd] })
-  });
-  if (!res.ok) {
-    console.error('Erreur PATCH', res.status, await res.text());
-    return;
-  }
-  console.log(\`\${toAdd.length} thématique(s) ajoutée(s) :\`, toAdd.map(t => t.title));
-})();`
+  const proposed = JSON.stringify(topicTitles.map(title => ({ title })))
+  return `(async () => { const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null); const account = session && session.account; if (!account || !account.type || !account.id) { console.error("Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez."); return; } const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id; const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`; const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json()); const proposed = ${proposed}; const existing = new Set((settings.topics || []).map(t => t.title)); const toAdd = proposed.filter(t => !existing.has(t.title)); if (!toAdd.length) { console.log("Aucune nouvelle thématique à ajouter."); return; } const res = await fetch(baseUrl, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ topics: [...(settings.topics || []), ...toAdd] }) }); if (!res.ok) { console.error('Erreur PATCH', res.status, await res.text()); return; } console.log(\`\${toAdd.length} thématique(s) ajoutée(s) :\`, toAdd.map(t => t.title)); })();`
 }
 
 const buildLicensesSnippet = (licenses: { title: string, href: string }[]): string => {
-  return `// Sur la page Data-Fair (n'importe laquelle, vous devez être connecté), ouvrez la console du navigateur (F12) et collez ce snippet :
-(async () => {
-  const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null);
-  const account = session && session.account;
-  if (!account || !account.type || !account.id) {
-    console.error("Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez.");
-    return;
-  }
-  const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id;
-  const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`;
-  const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json());
-  const proposed = ${JSON.stringify(licenses, null, 2).replace(/\n/g, '\n  ')};
-  const existing = new Set((settings.licenses || []).map(l => l.href));
-  const toAdd = proposed.filter(l => !existing.has(l.href));
-  if (!toAdd.length) {
-    console.log("Aucune nouvelle licence à ajouter.");
-    return;
-  }
-  const res = await fetch(baseUrl, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ licenses: [...(settings.licenses || []), ...toAdd] })
-  });
-  if (!res.ok) {
-    console.error('Erreur PATCH', res.status, await res.text());
-    return;
-  }
-  console.log(\`\${toAdd.length} licence(s) ajoutée(s) :\`, toAdd.map(l => l.title));
-})();`
+  return `(async () => { const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null); const account = session && session.account; if (!account || !account.type || !account.id) { console.error("Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez."); return; } const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id; const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`; const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json()); const proposed = ${JSON.stringify(licenses)}; const existing = new Set((settings.licenses || []).map(l => l.href)); const toAdd = proposed.filter(l => !existing.has(l.href)); if (!toAdd.length) { console.log("Aucune nouvelle licence à ajouter."); return; } const res = await fetch(baseUrl, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ licenses: [...(settings.licenses || []), ...toAdd] }) }); if (!res.ok) { console.error('Erreur PATCH', res.status, await res.text()); return; } console.log(\`\${toAdd.length} licence(s) ajoutée(s) :\`, toAdd.map(l => l.title)); })();`
 }
 
 const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
@@ -153,7 +95,7 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
 
 const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
   const { processingConfig, axios, log } = context
-  const { url: portalUrl, themes: themesMapping } = processingConfig
+  const { url: portalUrl, themes: themesMapping, licenses: licensesMapping } = processingConfig
 
   await log.step('Récupération de la liste des jeux de données ODS')
   const odsDatasets = await fetchOdsDatasets(portalUrl, axios)
@@ -177,7 +119,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
         const filePath = await downloadCSV(odsDataset, context)
 
         // Build metadata with theme mapping
-        const metadata = getMetadata(odsDataset, portalUrl, themesMapping)
+        const metadata = getMetadata(odsDataset, portalUrl, themesMapping, licensesMapping)
 
         // Check if dataset already exists
         const slug = odsDataset.dataset_id

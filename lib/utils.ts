@@ -1,6 +1,6 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
-import type { OdsDataset, ProcessingConfig, ThemeMapping } from './types.ts'
-import { mapFrequency, parseTemporal, mapThemesToTopics } from './mappings.ts'
+import type { LicenseMapping, OdsDataset, ProcessingConfig, ThemeMapping } from './types.ts'
+import { mapFrequency, parseTemporal, mapThemesToTopics, mapLicense } from './mappings.ts'
 
 import path from 'path'
 import fs from 'fs'
@@ -22,7 +22,12 @@ export const fetchOdsDatasets = async (portalUrl: string, axios: any): Promise<O
   return datasets
 }
 
-export const getMetadata = (odsDataset: OdsDataset, portalUrl: string, themesMapping?: ThemeMapping[]): Record<string, any> => {
+export const getMetadata = (
+  odsDataset: OdsDataset,
+  portalUrl: string,
+  themesMapping?: ThemeMapping[],
+  licensesMapping?: LicenseMapping[]
+): Record<string, any> => {
   const dataset: Record<string, any> = {
     slug: odsDataset.dataset_id,
     title: odsDataset.metas?.default?.title ?? '',
@@ -32,12 +37,12 @@ export const getMetadata = (odsDataset: OdsDataset, portalUrl: string, themesMap
     analysis: { escapeKeyAlgorithm: 'compat-ods' },
   }
 
-  if (odsDataset.metas?.default?.license && odsDataset.metas?.default?.license_url) {
-    dataset.license = {
-      title: odsDataset.metas.default.license,
-      href: odsDataset.metas.default.license_url,
-    }
-  }
+  const license = mapLicense(
+    odsDataset.metas?.default?.license,
+    odsDataset.metas?.default?.license_url,
+    licensesMapping
+  )
+  if (license) dataset.license = license
 
   // Topics
   const topics = mapThemesToTopics(odsDataset.metas?.default?.theme, themesMapping)

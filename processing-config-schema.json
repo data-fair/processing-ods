@@ -79,6 +79,76 @@
       }
     },
     {
+      "title": "License mapping",
+      "x-i18n-title": { "fr": "Mapping des licences" },
+      "layout": {
+        "if": "parent.data.mode === 'import' && parent.data.haveList",
+        "children": [
+          {
+            "markdown": "You can link a Data Fair license to each ODS license. Data Fair embeds common licenses (e.g. Etalab Open License v2.0, ODbL); additional ones can be created from the <a href=\"/data-fair/settings\" target=\"_blank\" rel=\"noopener noreferrer\"><strong>Licenses</strong></a> tab in the settings, or via the snippet provided by the portal analysis step. If no Data Fair license is selected, the ODS title and URL are used as-is.",
+            "x-i18n-markdown": {
+              "fr": "Vous pouvez associer à chaque <strong>licence ODS</strong> une <strong>licence Data Fair</strong>. Data Fair embarque les licences courantes (ex. Licence Ouverte Etalab v2.0, ODbL) ; vous pouvez en créer d'autres depuis l'onglet <a href=\"/data-fair/settings\" target=\"_blank\" rel=\"noopener noreferrer\"><strong>Licences</strong></a> dans les paramètres, ou via le snippet fourni par l'étape d'analyse du portail. Si aucune licence Data Fair n'est sélectionnée, le titre et l'URL ODS sont utilisés tels quels."
+            }
+          },
+          "licenses"
+        ]
+      },
+      "properties": {
+        "licenses": {
+          "type": "array",
+          "title": "",
+          "layout": {
+            "comp": "list",
+            "listEditMode": "inline",
+            "density": "compact",
+            "getItems": {
+              "url": {
+                "expr": "parent.data.url ? `${parent.data.url}/api/explore/v2.1/catalog/facets?facet=license` : undefined",
+                "type": "js-eval"
+              },
+              "itemsResults": "data.facets[0]?.facets",
+              "itemKey": "item.value"
+            }
+          },
+          "items": {
+            "type": "object",
+            "required": ["value"],
+            "layout": { "readOnlyPropertiesMode": "show" },
+            "properties": {
+              "value": {
+                "type": "string",
+                "title": "ODS license",
+                "x-i18n-title": { "fr": "Licence ODS" },
+                "readOnly": true,
+                "layout": { "cols": 6 }
+              },
+              "dataFairLicense": {
+                "type": "object",
+                "title": "Data Fair license",
+                "x-i18n-title": { "fr": "Licence Data Fair" },
+                "layout": {
+                  "props": { "clearable": true },
+                  "cols": 6,
+                  "getItems": {
+                    "url": "/data-fair/api/v1/settings/${context.owner.type}/${context.owner.id}/licenses",
+                    "itemsResults": "data",
+                    "itemKey": "item.href",
+                    "itemTitle": "item.title"
+                  }
+                },
+                "additionalProperties": false,
+                "required": ["title", "href"],
+                "properties": {
+                  "title": { "type": "string" },
+                  "href": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "title": "Theme mapping",
       "x-i18n-title": { "fr": "Mapping des thématiques" },
       "layout": {

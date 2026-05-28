@@ -1,4 +1,4 @@
-import type { DFTopic, ThemeMapping } from './types.ts'
+import type { DFLicense, DFTopic, LicenseMapping, ThemeMapping } from './types.ts'
 
 const frequencyMap: Record<string, string> = {
   // ISO 8601 durations
@@ -53,4 +53,20 @@ export const mapThemesToTopics = (odsThemes: string[] | undefined, mappingTable:
   }
 
   return topics.length > 0 ? topics : undefined
+}
+
+export const mapLicense = (
+  odsLicenseTitle: string | undefined,
+  odsLicenseUrl: string | undefined,
+  mappingTable: LicenseMapping[] | undefined
+): DFLicense | undefined => {
+  if (!odsLicenseTitle) return undefined
+  const mapping = Array.isArray(mappingTable)
+    ? mappingTable.find((m) => m.value === odsLicenseTitle)
+    : undefined
+  if (mapping?.dataFairLicense?.title && mapping.dataFairLicense?.href) {
+    return { title: mapping.dataFairLicense.title, href: mapping.dataFairLicense.href }
+  }
+  if (odsLicenseUrl) return { title: odsLicenseTitle, href: odsLicenseUrl }
+  return undefined
 }

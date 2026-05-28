@@ -6,10 +6,22 @@ export type DFTopic = {
   icon?: object
 }
 
+// Data-Fair license
+export type DFLicense = {
+  title: string
+  href: string
+}
+
 // Theme mapping entry (ODS theme → Data-Fair topics)
 export type ThemeMapping = {
   value: string
   dataFairThemes: DFTopic[]
+}
+
+// License mapping entry (ODS license title → Data-Fair license)
+export type LicenseMapping = {
+  value: string
+  dataFairLicense?: DFLicense
 }
 
 // Processing config
@@ -18,6 +30,7 @@ export type ProcessingConfig = {
   mode: 'analyse' | 'import'
   haveList?: boolean
   themes?: ThemeMapping[]
+  licenses?: LicenseMapping[]
 }
 
 // Types for ODS Dataset (copied from catalog-ods)
