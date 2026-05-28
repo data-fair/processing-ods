@@ -1,19 +1,33 @@
 import type { DFLicense, DFTopic, LicenseMapping, ThemeMapping } from './types.ts'
 
+// Data-Fair accepts only this enum (see types/dataset/schema.js).
+// Values from ODS portals are a mix of: ISO 8601 durations, Dublin Core URIs, the data-fair enum
+// values themselves, and French free-text. Normalize on lowercase and lookup.
+const DF_FREQUENCIES = new Set([
+  'triennial', 'biennial', 'annual', 'semiannual', 'threeTimesAYear', 'quarterly', 'bimonthly',
+  'monthly', 'semimonthly', 'biweekly', 'threeTimesAMonth', 'weekly', 'semiweekly', 'threeTimesAWeek',
+  'daily', 'continuous', 'irregular'
+])
+
 const frequencyMap: Record<string, string> = {
   // ISO 8601 durations
-  P1D: 'daily',
-  P1W: 'weekly',
-  'P0.5M': 'semimonthly',
-  P1M: 'monthly',
-  P3M: 'quarterly',
-  P6M: 'semiannual',
-  P1Y: 'annual',
-  // DCAT URIs
+  p1d: 'daily',
+  p1w: 'weekly',
+  'p0.5m': 'semimonthly',
+  p2w: 'biweekly',
+  p1m: 'monthly',
+  p2m: 'bimonthly',
+  p3m: 'quarterly',
+  p6m: 'semiannual',
+  p1y: 'annual',
+  p2y: 'biennial',
+  p3y: 'triennial',
+  // Dublin Core URIs (already lowercased)
   'http://purl.org/cld/freq/daily': 'daily',
   'http://purl.org/cld/freq/weekly': 'weekly',
   'http://purl.org/cld/freq/semimonthly': 'semimonthly',
   'http://purl.org/cld/freq/monthly': 'monthly',
+  'http://purl.org/cld/freq/bimonthly': 'bimonthly',
   'http://purl.org/cld/freq/quarterly': 'quarterly',
   'http://purl.org/cld/freq/semiannual': 'semiannual',
   'http://purl.org/cld/freq/annual': 'annual',
@@ -21,11 +35,41 @@ const frequencyMap: Record<string, string> = {
   'http://purl.org/cld/freq/triennial': 'triennial',
   'http://purl.org/cld/freq/continuous': 'continuous',
   'http://purl.org/cld/freq/irregular': 'irregular',
+  // French free-text variants seen on ODS portals
+  quotidienne: 'daily',
+  quotidien: 'daily',
+  journalière: 'daily',
+  journaliere: 'daily',
+  hebdomadaire: 'weekly',
+  bimensuelle: 'semimonthly',
+  mensuelle: 'monthly',
+  mensuel: 'monthly',
+  bimestriel: 'bimonthly',
+  bimestrielle: 'bimonthly',
+  trimestrielle: 'quarterly',
+  trimestriel: 'quarterly',
+  semestrielle: 'semiannual',
+  semestriel: 'semiannual',
+  annuelle: 'annual',
+  annuel: 'annual',
+  bisannuelle: 'biennial',
+  biennale: 'biennial',
+  triennale: 'triennial',
+  'temps réel': 'continuous',
+  'temps reel': 'continuous',
+  "tous les quarts d'heure": 'continuous',
+  ponctuelle: 'irregular',
+  ponctuel: 'irregular',
+  'production unique': 'irregular',
+  irrégulière: 'irregular',
+  irreguliere: 'irregular',
 }
 
-export const mapFrequency = (isoFrequency: string | undefined): string | undefined => {
-  if (!isoFrequency) return undefined
-  return frequencyMap[isoFrequency]
+export const mapFrequency = (rawFrequency: string | undefined): string | undefined => {
+  if (!rawFrequency) return undefined
+  // Accept the data-fair enum value as-is.
+  if (DF_FREQUENCIES.has(rawFrequency)) return rawFrequency
+  return frequencyMap[rawFrequency.toLowerCase().trim()]
 }
 
 // Data-Fair expects format "date" (YYYY-MM-DD), but ODS often provides full ISO datetime.
