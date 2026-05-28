@@ -7,13 +7,30 @@ import FormData from 'form-data'
 
 const MAX_PARALLEL = 5
 
+// Single-quoted JS string literal, with proper escaping (used to avoid any
+// double-quote in the snippet — when stored as JSON in the log "extra" field,
+// double quotes get escaped to \" and break copy-paste into the browser console).
+const sq = (s: string): string => {
+  const unsafe = new RegExp("[\\x00-\\x1F\\x7F\\u2028\\u2029\\\\']", 'g')
+  const escaped = s.replace(unsafe, c => {
+    if (c === '\\') return '\\\\'
+    if (c === "'") return "\\'"
+    if (c === '\n') return '\\n'
+    if (c === '\r') return '\\r'
+    if (c === '\t') return '\\t'
+    return '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')
+  })
+  return "'" + escaped + "'"
+}
+
 const buildTopicsSnippet = (topicTitles: string[]): string => {
-  const proposed = JSON.stringify(topicTitles.map(title => ({ title })))
-  return `(async () => { const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null); const account = session && session.account; if (!account || !account.type || !account.id) { console.error("Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez."); return; } const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id; const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`; const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json()); const proposed = ${proposed}; const existing = new Set((settings.topics || []).map(t => t.title)); const toAdd = proposed.filter(t => !existing.has(t.title)); if (!toAdd.length) { console.log("Aucune nouvelle thématique à ajouter."); return; } const res = await fetch(baseUrl, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ topics: [...(settings.topics || []), ...toAdd] }) }); if (!res.ok) { console.error('Erreur PATCH', res.status, await res.text()); return; } console.log(\`\${toAdd.length} thématique(s) ajoutée(s) :\`, toAdd.map(t => t.title)); })();`
+  const proposed = '[' + topicTitles.map(t => sq(t)).join(',') + '].map(title => ({ title }))'
+  return `(async () => { const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null); const account = session && session.account; if (!account || !account.type || !account.id) { console.error('Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez.'); return; } const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id; const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`; const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json()); const proposed = ${proposed}; const existing = new Set((settings.topics || []).map(t => t.title)); const toAdd = proposed.filter(t => !existing.has(t.title)); if (!toAdd.length) { console.log('Aucune nouvelle thématique à ajouter.'); return; } const res = await fetch(baseUrl, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ topics: [...(settings.topics || []), ...toAdd] }) }); if (!res.ok) { console.error('Erreur PATCH', res.status, await res.text()); return; } console.log(\`\${toAdd.length} thématique(s) ajoutée(s) :\`, toAdd.map(t => t.title)); })();`
 }
 
 const buildLicensesSnippet = (licenses: { title: string, href: string }[]): string => {
-  return `(async () => { const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null); const account = session && session.account; if (!account || !account.type || !account.id) { console.error("Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez."); return; } const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id; const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`; const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json()); const proposed = ${JSON.stringify(licenses)}; const existing = new Set((settings.licenses || []).map(l => l.href)); const toAdd = proposed.filter(l => !existing.has(l.href)); if (!toAdd.length) { console.log("Aucune nouvelle licence à ajouter."); return; } const res = await fetch(baseUrl, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ licenses: [...(settings.licenses || []), ...toAdd] }) }); if (!res.ok) { console.error('Erreur PATCH', res.status, await res.text()); return; } console.log(\`\${toAdd.length} licence(s) ajoutée(s) :\`, toAdd.map(l => l.title)); })();`
+  const proposed = '[' + licenses.map(l => `[${sq(l.title)},${sq(l.href)}]`).join(',') + '].map(([title, href]) => ({ title, href }))'
+  return `(async () => { const session = await fetch('/simple-directory/api/auth/my-session', { credentials: 'include' }).then(r => r.json()).catch(() => null); const account = session && session.account; if (!account || !account.type || !account.id) { console.error('Aucun compte actif détecté. Connectez-vous sur Data-Fair puis réessayez.'); return; } const accountId = account.department ? \`\${account.id}:\${account.department}\` : account.id; const baseUrl = \`/data-fair/api/v1/settings/\${account.type}/\${accountId}\`; const settings = await fetch(baseUrl, { credentials: 'include' }).then(r => r.json()); const proposed = ${proposed}; const existing = new Set((settings.licenses || []).map(l => l.href)); const toAdd = proposed.filter(l => !existing.has(l.href)); if (!toAdd.length) { console.log('Aucune nouvelle licence à ajouter.'); return; } const res = await fetch(baseUrl, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ licenses: [...(settings.licenses || []), ...toAdd] }) }); if (!res.ok) { console.error('Erreur PATCH', res.status, await res.text()); return; } console.log(\`\${toAdd.length} licence(s) ajoutée(s) :\`, toAdd.map(l => l.title)); })();`
 }
 
 const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
