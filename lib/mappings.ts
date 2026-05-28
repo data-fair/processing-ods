@@ -28,11 +28,21 @@ export const mapFrequency = (isoFrequency: string | undefined): string | undefin
   return frequencyMap[isoFrequency]
 }
 
+// Data-Fair expects format "date" (YYYY-MM-DD), but ODS often provides full ISO datetime.
+export const toDate = (value: string | undefined): string | undefined => {
+  if (!value) return undefined
+  const m = value.match(/^(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1] : undefined
+}
+
 export const parseTemporal = (temporal: string | undefined): { start: string, end: string } | undefined => {
   if (!temporal) return undefined
   const parts = temporal.split('/')
   if (parts.length !== 2) return undefined
-  return { start: parts[0], end: parts[1] }
+  const start = toDate(parts[0])
+  const end = toDate(parts[1])
+  if (!start || !end) return undefined
+  return { start, end }
 }
 
 export const mapThemesToTopics = (odsThemes: string[] | undefined, mappingTable: ThemeMapping[] | undefined): DFTopic[] | undefined => {

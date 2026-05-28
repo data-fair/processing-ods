@@ -1,6 +1,6 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
 import type { LicenseMapping, OdsDataset, ProcessingConfig, ThemeMapping } from './types.ts'
-import { mapFrequency, parseTemporal, mapThemesToTopics, mapLicense } from './mappings.ts'
+import { mapFrequency, parseTemporal, mapThemesToTopics, mapLicense, toDate } from './mappings.ts'
 
 import path from 'path'
 import fs from 'fs'
@@ -48,8 +48,8 @@ export const getMetadata = (
   const topics = mapThemesToTopics(odsDataset.metas?.default?.theme, themesMapping)
   if (topics) dataset.topics = topics
 
-  // Modified date
-  const modified = odsDataset.metas?.default?.modified || odsDataset.metas?.default?.metadata_processed
+  // Modified date — Data-Fair expects format "date" (YYYY-MM-DD), ODS provides ISO datetime
+  const modified = toDate(odsDataset.metas?.default?.modified || odsDataset.metas?.default?.metadata_processed)
   if (modified) dataset.modified = modified
 
   // DCAT metadata
