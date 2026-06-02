@@ -6,23 +6,35 @@
   "scripts": {
     "lint": "eslint .",
     "lint-fix": "eslint --fix .",
+    "prepare": "husky || true",
     "build-types": "export NODE_OPTIONS='--experimental-strip-types' && df-build-types ./",
     "test-base": "NODE_ENV=test node --experimental-strip-types --test-force-exit --test-concurrency=1 --test --test-reporter=spec --test-reporter-destination=stdout",
     "test": "npm run test-base test-it/*.ts"
   },
+  "imports": {
+    "#types/*": "./types/*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/data-fair/processing-ods.git"
+  },
   "keywords": [
     "data-fair-processings-plugin"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "type": "module",
+  "bugs": {
+    "url": "https://github.com/data-fair/processing-ods/issues"
+  },
+  "homepage": "https://github.com/data-fair/processing-ods#readme",
   "devDependencies": {
     "@commitlint/cli": "^19.8.1",
     "@commitlint/config-conventional": "^19.8.1",
-    "@data-fair/lib-common-types": "^1.10.1",
+    "@data-fair/lib-common-types": "^1.20.6",
     "@data-fair/lib-processing-dev": "^0.2.0",
-    "@types/config": "^3.3.5",
-    "@types/node": "^22.15.17",
-    "config": "^3.3.12",
+    "@data-fair/lib-types-builder": "^1.7.0",
+    "@types/node": "^25.5.0",
+    "config": "^4.4.1",
     "debug": "^4.4.0",
     "eslint": "^9.26.0",
     "husky": "^9.1.7",
@@ -31,10 +43,13 @@
     "ws": "^8.19.0"
   },
   "files": [
-    "plugin-config-schema.json",
     "processing-config-schema.json",
     "./lib/**/*"
   ],
+  "relativeDependencies": {
+    "@data-fair/lib-common-types": "../../lib/packages/common-types",
+    "@data-fair/lib-processing-dev": "../../lib/packages/processing-dev"
+  },
   "dependencies": {
     "form-data": "^4.0.5"
   }

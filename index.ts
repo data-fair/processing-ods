@@ -1,5 +1,5 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
-import type { ProcessingConfig } from './lib/types.ts'
+import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
 import { fetchOdsDatasets, getMetadata, downloadCSV } from './lib/utils.ts'
 import { createReadStream } from 'fs'
 import { promisify } from 'util'
@@ -15,7 +15,8 @@ let shouldBeStopped = false
 // double-quote in the snippet — when stored as JSON in the log "extra" field,
 // double quotes get escaped to \" and break copy-paste into the browser console).
 const sq = (s: string): string => {
-  const unsafe = new RegExp("[\\x00-\\x1F\\x7F\\u2028\\u2029\\\\']", 'g')
+  // eslint-disable-next-line no-control-regex -- intentionally matches control characters to escape them
+  const unsafe = /[\x00-\x1F\x7F\u2028\u2029\\']/g
   const escaped = s.replace(unsafe, c => {
     if (c === '\\') return '\\\\'
     if (c === "'") return "\\'"

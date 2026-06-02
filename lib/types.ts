@@ -24,16 +24,6 @@ export type LicenseMapping = {
   dataFairLicense?: DFLicense
 }
 
-// Processing config
-export type ProcessingConfig = {
-  url: string
-  mode: 'analyse' | 'import'
-  haveList?: boolean
-  themes?: ThemeMapping[]
-  licenses?: LicenseMapping[]
-  relatedDatasetsThreshold?: number
-}
-
 // Types for ODS Dataset (copied from catalog-ods)
 export type OdsDataset = {
   dataset_id: string;

@@ -1,5 +1,6 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
-import type { LicenseMapping, OdsDataset, ProcessingConfig, ThemeMapping } from './types.ts'
+import type { LicenseMapping, OdsDataset, ThemeMapping } from './types.ts'
+import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
 import { mapFrequency, parseTemporal, mapThemesToTopics, mapLicense, toDate } from './mappings.ts'
 
 import path from 'path'
