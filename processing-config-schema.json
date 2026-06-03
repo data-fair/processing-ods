@@ -86,6 +86,38 @@
           },
           "default": 1.5,
           "minimum": 0
+        },
+        "publicationSite": {
+          "type": "string",
+          "title": "Publish on a portal",
+          "x-i18n-title": { "fr": "Publier sur un portail" },
+          "description": "One-shot action: the imported datasets are published on the selected portal during this run, then the selection is cleared at the end of the run. Existing publications on other portals are preserved.",
+          "x-i18n-description": {
+            "fr": "Action ponctuelle : les jeux de données importés sont publiés sur le portail sélectionné pendant ce run, puis la sélection est réinitialisée à la fin du run. Les publications existantes sur d'autres portails sont conservées."
+          },
+          "layout": {
+            "if": "parent.data.mode === 'import' && parent.data.haveList",
+            "props": { "clearable": true },
+            "getItems": {
+              "url": "/data-fair/api/v1/settings/${context.owner.type}/${context.owner.id}/publication-sites",
+              "itemsResults": "data",
+              "itemKey": "item.type + ':' + item.id",
+              "itemTitle": "item.title"
+            }
+          }
+        },
+        "makePublic": {
+          "type": "boolean",
+          "title": "Make datasets public",
+          "x-i18n-title": { "fr": "Rendre les jeux de données publics" },
+          "default": false,
+          "description": "One-shot action: sets the permissions \"anyone can read\" + \"organization contributors can update everything except breaking changes\" on the imported datasets during this run, then unchecks itself at the end of the run.",
+          "x-i18n-description": {
+            "fr": "Action ponctuelle : applique aux jeux de données importés les permissions « tout le monde peut consulter » + « les contributeurs de l'organisation peuvent tout modifier sauf rupture de compatibilité » pendant ce run, puis se décoche à la fin du run."
+          },
+          "layout": {
+            "if": "parent.data.mode === 'import' && parent.data.haveList"
+          }
         }
       }
     },

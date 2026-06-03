@@ -1,6 +1,6 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
 import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
-import { fetchOdsDatasets, fetchExistingDatasetsBySlug, getMetadata, downloadCSV } from './lib/utils.ts'
+import { fetchOdsDatasets, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV } from './lib/utils.ts'
 import { formatBytes } from '@data-fair/lib-utils/format/bytes.js'
 import { createReadStream, statSync } from 'fs'
 import { promisify } from 'util'
@@ -163,8 +163,11 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
 }
 
 const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
-  const { processingConfig, axios, log, processingId } = context
-  const { url: portalUrl, themes: themesMapping, licenses: licensesMapping, relatedDatasetsThreshold } = processingConfig
+  const { processingConfig, axios, log, processingId, patchConfig } = context
+  const { url: portalUrl, themes: themesMapping, licenses: licensesMapping, relatedDatasetsThreshold, publicationSite, makePublic } = processingConfig
+  // One-shot exposure actions: applied to every dataset during this run, then reset at the end.
+  const exposure = { publicationSite, makePublic }
+  const exposureRequested = !!publicationSite || !!makePublic
 
   await log.step('Récupération de la liste des jeux de données ODS')
   const odsDatasets = await fetchOdsDatasets(portalUrl, axios)
@@ -219,6 +222,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
           delete metaOnly.schema
           delete metaOnly.slug
           await axios.patch(`api/v1/datasets/${existing.id}`, metaOnly)
+          if (exposureRequested) await applyExposure(axios, log, { id: existing.id, owner: existing.owner, publicationSites: existing.publicationSites }, exposure)
           await log.info(`Inchangé (modified ${metadata.modified}) — métadonnées mises à jour, téléchargement ignoré: ${metadata.title || slug}`)
           results.push({ datasetId: slug, title, link, success: true, skipped: true, dfId: existing.id })
           return
@@ -279,6 +283,8 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
         } catch {
           // Thumbnail not available or upload failed, skip silently
         }
+
+        if (exposureRequested) await applyExposure(axios, log, { id: result.id, owner: result.owner, publicationSites: result.publicationSites }, exposure)
 
         results.push({ datasetId: odsDataset.dataset_id, title, link, success: true, sizeBytes, dfId: result.id })
       } catch (err: any) {
@@ -377,6 +383,13 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
 
     while (activeRelated.size > 0) await new Promise(resolve => setTimeout(resolve, 100))
     await log.info(`Jeux liés ajoutés sur ${relatedWithLinks}/${targets.length} jeux de données`)
+  }
+
+  // Reset the one-shot exposure actions so they don't replay on the next (sync) run. Only on a
+  // completed run — if interrupted, we keep them so a re-run can finish (operations are idempotent).
+  if (exposureRequested && !shouldBeStopped) {
+    await patchConfig({ makePublic: false, publicationSite: null } as any)
+    await log.info('Options de publication réinitialisées (publier sur un portail / rendre public).')
   }
 
   await logImportReport(log, results, totalDatasets)

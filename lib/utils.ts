@@ -31,16 +31,25 @@ export const fetchOdsDatasets = async (portalUrl: string, axios: any): Promise<O
  * dataset (and reuse its Data-Fair-generated id) without ever pushing an id ourselves, we list the
  * account's datasets once and build a slug -> { id, modified } map.
  */
-export const fetchExistingDatasetsBySlug = async (axios: any): Promise<Map<string, { id: string, modified?: string }>> => {
-  const bySlug = new Map<string, { id: string, modified?: string }>()
+export type ExistingDataset = {
+  id: string
+  modified?: string
+  owner?: { type?: string, id?: string, name?: string, department?: string }
+  publicationSites?: string[]
+}
+
+export const fetchExistingDatasetsBySlug = async (axios: any): Promise<Map<string, ExistingDataset>> => {
+  const bySlug = new Map<string, ExistingDataset>()
   const size = 1000
   let page = 1
 
+  // owner + publicationSites are selected so the "publish" / "make public" actions can be applied
+  // on the skip path (unchanged datasets) without an extra GET per dataset.
   while (true) {
-    const res = await axios.get(`api/v1/datasets?size=${size}&page=${page}&select=id,slug,modified`)
+    const res = await axios.get(`api/v1/datasets?size=${size}&page=${page}&select=id,slug,modified,owner,publicationSites`)
     const results = res.data?.results ?? []
     for (const ds of results) {
-      if (ds.slug) bySlug.set(ds.slug, { id: ds.id, modified: ds.modified })
+      if (ds.slug) bySlug.set(ds.slug, { id: ds.id, modified: ds.modified, owner: ds.owner, publicationSites: ds.publicationSites })
     }
     const count = res.data?.count ?? 0
     if (results.length < size || page * size >= count) break
@@ -48,6 +57,90 @@ export const fetchExistingDatasetsBySlug = async (axios: any): Promise<Map<strin
   }
 
   return bySlug
+}
+
+type Owner = { type?: string, id?: string, name?: string, department?: string }
+
+/**
+ * Permissions equivalent to the Data-Fair UI "anyone can read" + "organization contributors can
+ * update anything except breaking changes" (contribWriteNoBreaking), for a file dataset.
+ * Mirrors ui-legacy/public/components/permissions.vue (setters `visibility` and `contribProfile`).
+ */
+export const buildPublicPermissions = (owner: Owner): any[] => {
+  const publicRead = { operations: [], classes: ['list', 'read'] }
+  if (owner.type !== 'organization' || !owner.id) {
+    // user-owned (or unknown owner): only the public read entry is meaningful
+    return [publicRead]
+  }
+  return [
+    {
+      type: 'organization',
+      id: owner.id,
+      department: owner.department || '-',
+      name: owner.name,
+      roles: ['contrib'],
+      operations: ['writeData', 'cancelDraft', 'writeDescription', 'postMetadataAttachment', 'deleteMetadataAttachment'],
+      classes: []
+    },
+    {
+      type: 'organization',
+      id: owner.id,
+      name: owner.name,
+      roles: ['contrib'],
+      operations: [],
+      classes: ['list', 'read', 'readAdvanced']
+    },
+    publicRead
+  ]
+}
+
+// A permission entry we manage through the "make public" action: the public read entry, or any
+// owner-organization entry. These are stripped before re-applying ours, so re-runs don't duplicate
+// them while permissions set on other entities are preserved.
+const isManagedPermission = (p: any, owner: Owner): boolean => {
+  const isPublicRead = !p.type && (p.classes ?? []).includes('read')
+  const isOwnerOrg = p.type === 'organization' && owner.type === 'organization' && p.id === owner.id
+  return isPublicRead || isOwnerOrg
+}
+
+/**
+ * Apply the one-shot "publish on a portal" and "make public" actions to a single dataset.
+ * Errors are logged but never interrupt the import.
+ */
+export const applyExposure = async (
+  axios: any,
+  log: any,
+  dataset: { id: string, owner?: Owner, publicationSites?: string[] },
+  opts: { publicationSite?: string, makePublic?: boolean }
+): Promise<void> => {
+  const { id } = dataset
+
+  // Publish on a portal — read-before-write merge: pushing publicationSites overwrites the whole
+  // list, so we must keep the existing publications and only add the selected one.
+  if (opts.publicationSite) {
+    try {
+      const current = Array.isArray(dataset.publicationSites) ? dataset.publicationSites : []
+      if (!current.includes(opts.publicationSite)) {
+        await axios.patch(`api/v1/datasets/${id}`, { publicationSites: [...current, opts.publicationSite] })
+      }
+    } catch (err: any) {
+      const detail = err.response?.data
+      await log.error(`Erreur lors de la publication sur le portail pour ${id}: ${err.message}`, typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : '')
+    }
+  }
+
+  // Make public — fetch current permissions, strip the ones we manage, re-apply ours, PUT.
+  if (opts.makePublic) {
+    try {
+      const owner = dataset.owner ?? {}
+      const current = (await axios.get(`api/v1/datasets/${id}/permissions`)).data ?? []
+      const kept = (Array.isArray(current) ? current : []).filter((p: any) => !isManagedPermission(p, owner))
+      await axios.put(`api/v1/datasets/${id}/permissions`, [...kept, ...buildPublicPermissions(owner)])
+    } catch (err: any) {
+      const detail = err.response?.data
+      await log.error(`Erreur lors de la mise en public pour ${id}: ${err.message}`, typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : '')
+    }
+  }
 }
 
 export const getMetadata = (
