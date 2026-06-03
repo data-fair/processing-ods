@@ -48,9 +48,11 @@
   ],
   "relativeDependencies": {
     "@data-fair/lib-common-types": "../../lib/packages/common-types",
-    "@data-fair/lib-processing-dev": "../../lib/packages/processing-dev"
+    "@data-fair/lib-processing-dev": "../../lib/packages/processing-dev",
+    "@data-fair/lib-utils": "../../lib/packages/utils"
   },
   "dependencies": {
+    "@data-fair/lib-utils": "^1.9.0",
     "form-data": "^4.0.5"
   }
 }

@@ -138,9 +138,12 @@ export const downloadCSV = async (odsDataset: OdsDataset, context: ProcessingCon
     await log.progress(`Téléchargement ${odsDataset.dataset_id}`, stats.size, stats.size)
 
     return filePath
-  } catch (error) {
+  } catch (error: any) {
     console.error('Erreur lors de la récupération du dataset ODS (stream)', error)
     await log.error('Erreur lors de la récupération du dataset ODS (stream)', error instanceof Error ? error.message : String(error))
-    throw new Error('Erreur pendant le téléchargement du dataset ODS en streaming')
+    const wrapped: any = new Error('Erreur pendant le téléchargement du dataset ODS en streaming')
+    // Preserve the original HTTP status / network code so the final report can sort by it.
+    wrapped.code = error?.response?.status ?? error?.code
+    throw wrapped
   }
 }

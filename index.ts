@@ -1,11 +1,50 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
 import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
 import { fetchOdsDatasets, getMetadata, downloadCSV } from './lib/utils.ts'
-import { createReadStream } from 'fs'
+import { formatBytes } from '@data-fair/lib-utils/format/bytes.js'
+import { createReadStream, statSync } from 'fs'
 import { promisify } from 'util'
 import FormData from 'form-data'
 
 const MAX_PARALLEL = 5
+
+type ImportResult = {
+  datasetId: string
+  title: string
+  link: string
+  success: boolean
+  sizeBytes?: number
+  error?: string
+  code?: string | number
+}
+
+/** Rapport final affiché dans les logs à la fin d'un import. */
+const logImportReport = async (
+  log: ProcessingContext<ProcessingConfig>['log'],
+  results: ImportResult[],
+  totalDatasets: number
+) => {
+  const succeeded = results.filter(r => r.success)
+  const failed = results.filter(r => !r.success)
+  const totalBytes = succeeded.reduce((sum, r) => sum + (r.sizeBytes ?? 0), 0)
+
+  await log.step('Rapport final')
+  await log.info(`Jeux de données importés : ${succeeded.length}/${totalDatasets}`)
+  await log.info(`Taille totale importée (compressée) : ${formatBytes(totalBytes)}`)
+
+  if (failed.length === 0) {
+    await log.info('Aucun jeu de données en erreur')
+    return
+  }
+
+  await log.warning(`${failed.length} jeu(x) de données en erreur (trié par code d'erreur) :`)
+  const sorted = [...failed].sort((a, b) =>
+    String(a.code).localeCompare(String(b.code), undefined, { numeric: true })
+  )
+  for (const r of sorted) {
+    await log.error(`  [${r.code}] ${r.title} — ${r.link} : ${r.error}`)
+  }
+}
 
 // True when an interruption is requested for this processing.
 // Set by the exported `stop` function, checked in long-running loops to exit gracefully.
@@ -126,7 +165,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
   await log.step('Téléchargement et upload des jeux de données')
 
   const activeDownloads = new Set()
-  const results: { datasetId: string, success: boolean, error?: string }[] = []
+  const results: ImportResult[] = []
 
   let completedCount = 0
   const totalDatasets = odsDatasets.length
@@ -140,10 +179,17 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
     if (shouldBeStopped) break
     activeDownloads.add(odsDataset.dataset_id)
 
+    const title = odsDataset.metas?.default?.title ?? odsDataset.dataset_id
+    const link = `${portalUrl}/explore/dataset/${odsDataset.dataset_id}/information/`
+
     const processDataset = async () => {
+      // Tracks how far we got, so the error report can attribute the failure precisely.
+      let stage: 'download' | 'upload' = 'download'
       try {
         // Download CSV
         const filePath = await downloadCSV(odsDataset, context)
+        const sizeBytes = statSync(filePath).size
+        stage = 'upload'
 
         // Build metadata with theme mapping
         const metadata = getMetadata(odsDataset, portalUrl, themesMapping, licensesMapping)
@@ -200,13 +246,14 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
           // Thumbnail not available or upload failed, skip silently
         }
 
-        results.push({ datasetId: odsDataset.dataset_id, success: true })
+        results.push({ datasetId: odsDataset.dataset_id, title, link, success: true, sizeBytes })
       } catch (err: any) {
         const detail = err.response?.data
         const detailStr = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : ''
-        const stage = err.response ? "lors de l'upload vers Data-Fair" : 'lors du téléchargement depuis ODS'
-        await log.error(`Erreur ${stage} pour ${odsDataset.dataset_id}: ${err.message}`, detailStr)
-        results.push({ datasetId: odsDataset.dataset_id, success: false, error: err.message })
+        const stageLabel = stage === 'upload' ? "lors de l'upload vers Data-Fair" : 'lors du téléchargement depuis ODS'
+        const code = err.response?.status ?? err.code ?? 'ERR'
+        await log.error(`Erreur ${stageLabel} pour ${odsDataset.dataset_id}: ${err.message}`, detailStr)
+        results.push({ datasetId: odsDataset.dataset_id, title, link, success: false, error: err.message, code })
       } finally {
         activeDownloads.delete(odsDataset.dataset_id)
         completedCount++
@@ -226,6 +273,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
 
   if (shouldBeStopped) {
     await log.warning(`Traitement interrompu — ${completedCount}/${totalDatasets} jeux de données traités`)
+    await logImportReport(log, results, totalDatasets)
     return
   }
 
@@ -291,6 +339,8 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
     while (activeRelated.size > 0) await new Promise(resolve => setTimeout(resolve, 100))
     await log.info(`Jeux liés ajoutés sur ${relatedWithLinks}/${targets.length} jeux de données`)
   }
+
+  await logImportReport(log, results, totalDatasets)
 }
 
 export const run = async (context: ProcessingContext<ProcessingConfig>) => {
