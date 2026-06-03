@@ -23,6 +23,33 @@ export const fetchOdsDatasets = async (portalUrl: string, axios: any): Promise<O
   return datasets
 }
 
+/**
+ * Index the datasets already present in Data-Fair, keyed by slug.
+ *
+ * Data-Fair only resolves a slug in the `/datasets/{id}` URL when called from a portal, which is
+ * not our case here, and the list endpoint has no slug filter. So to find a previously imported
+ * dataset (and reuse its Data-Fair-generated id) without ever pushing an id ourselves, we list the
+ * account's datasets once and build a slug -> { id, modified } map.
+ */
+export const fetchExistingDatasetsBySlug = async (axios: any): Promise<Map<string, { id: string, modified?: string }>> => {
+  const bySlug = new Map<string, { id: string, modified?: string }>()
+  const size = 1000
+  let page = 1
+
+  while (true) {
+    const res = await axios.get(`api/v1/datasets?size=${size}&page=${page}&select=id,slug,modified`)
+    const results = res.data?.results ?? []
+    for (const ds of results) {
+      if (ds.slug) bySlug.set(ds.slug, { id: ds.id, modified: ds.modified })
+    }
+    const count = res.data?.count ?? 0
+    if (results.length < size || page * size >= count) break
+    page++
+  }
+
+  return bySlug
+}
+
 export const getMetadata = (
   odsDataset: OdsDataset,
   portalUrl: string,

@@ -1,6 +1,6 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
 import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
-import { fetchOdsDatasets, getMetadata, downloadCSV } from './lib/utils.ts'
+import { fetchOdsDatasets, fetchExistingDatasetsBySlug, getMetadata, downloadCSV } from './lib/utils.ts'
 import { formatBytes } from '@data-fair/lib-utils/format/bytes.js'
 import { createReadStream, statSync } from 'fs'
 import { promisify } from 'util'
@@ -13,6 +13,10 @@ type ImportResult = {
   title: string
   link: string
   success: boolean
+  /** Data-Fair-generated id of the dataset (used to reference it, e.g. for related datasets). */
+  dfId?: string
+  /** True when the source was unchanged: metadata refreshed but the data download was skipped. */
+  skipped?: boolean
   sizeBytes?: number
   error?: string
   code?: string | number
@@ -25,11 +29,15 @@ const logImportReport = async (
   totalDatasets: number
 ) => {
   const succeeded = results.filter(r => r.success)
+  const skipped = succeeded.filter(r => r.skipped)
   const failed = results.filter(r => !r.success)
   const totalBytes = succeeded.reduce((sum, r) => sum + (r.sizeBytes ?? 0), 0)
 
   await log.step('Rapport final')
   await log.info(`Jeux de données importés : ${succeeded.length}/${totalDatasets}`)
+  if (skipped.length > 0) {
+    await log.info(`dont ${skipped.length} inchangé(s) (téléchargement ignoré, métadonnées mises à jour)`)
+  }
   await log.info(`Taille totale importée (compressée) : ${formatBytes(totalBytes)}`)
 
   if (failed.length === 0) {
@@ -155,12 +163,18 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
 }
 
 const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
-  const { processingConfig, axios, log } = context
+  const { processingConfig, axios, log, processingId } = context
   const { url: portalUrl, themes: themesMapping, licenses: licensesMapping, relatedDatasetsThreshold } = processingConfig
 
   await log.step('Récupération de la liste des jeux de données ODS')
   const odsDatasets = await fetchOdsDatasets(portalUrl, axios)
   await log.info(`${odsDatasets.length} jeux de données trouvés sur le portail ODS`)
+
+  // Index existing Data-Fair datasets by slug, so re-runs update them in place (by their
+  // Data-Fair-generated id) instead of creating slug-suffixed duplicates.
+  await log.step('Indexation des jeux de données déjà présents dans Data-Fair')
+  const existingBySlug = await fetchExistingDatasetsBySlug(axios)
+  await log.info(`${existingBySlug.size} jeux de données existants indexés (recherche par slug)`)
 
   await log.step('Téléchargement et upload des jeux de données')
 
@@ -186,30 +200,50 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
       // Tracks how far we got, so the error report can attribute the failure precisely.
       let stage: 'download' | 'upload' = 'download'
       try {
+        const slug = odsDataset.dataset_id
+
+        // Build metadata with theme/license mapping. getMetadata also resolves the ODS "modified"
+        // date (YYYY-MM-DD) into metadata.modified, which we compare against Data-Fair below.
+        const metadata = getMetadata(odsDataset, portalUrl, themesMapping, licensesMapping)
+
+        // Existing dataset (matched by slug during the initial indexing). When present, `existing.id`
+        // is the Data-Fair-generated id — we reuse it, we never push an id of our own.
+        const existing = existingBySlug.get(slug)
+
+        // Incremental import: when the dataset already exists and the ODS "modified" date is
+        // unchanged, skip the (expensive) download and only refresh the metadata, so mapping
+        // changes (topics, licenses…) still get applied. No ODS "modified" date → re-import.
+        if (existing && metadata.modified && existing.modified === metadata.modified) {
+          const metaOnly: Record<string, any> = { ...metadata }
+          delete metaOnly.analysis
+          delete metaOnly.schema
+          delete metaOnly.slug
+          await axios.patch(`api/v1/datasets/${existing.id}`, metaOnly)
+          await log.info(`Inchangé (modified ${metadata.modified}) — métadonnées mises à jour, téléchargement ignoré: ${metadata.title || slug}`)
+          results.push({ datasetId: slug, title, link, success: true, skipped: true, dfId: existing.id })
+          return
+        }
+
         // Download CSV
         const filePath = await downloadCSV(odsDataset, context)
         const sizeBytes = statSync(filePath).size
         stage = 'upload'
 
-        // Build metadata with theme mapping
-        const metadata = getMetadata(odsDataset, portalUrl, themesMapping, licensesMapping)
+        // Tag the dataset so we can trace which processing created it.
+        const body = { ...metadata, extras: { ...(metadata.extras ?? {}), processingId } }
 
-        // Check if dataset already exists
-        const slug = odsDataset.dataset_id
-        const existingRes = await axios.get(`api/v1/datasets/${slug}`, { validateStatus: (s: number) => s === 200 || s === 404 })
-        const datasetExists = existingRes.status === 200
-
-        // Upload to Data-Fair
+        // Upload to Data-Fair: create with POST (Data-Fair generates the id, we only provide the
+        // slug) or, when it already exists, update its data via POST on its generated id.
         const formData = new FormData()
         formData.append('file', createReadStream(filePath))
-        formData.append('body', JSON.stringify(metadata))
+        formData.append('body', JSON.stringify(body))
 
         const getLength = promisify(formData.getLength.bind(formData))
         const contentLength = await getLength()
 
         const uploadResponse = await axios({
-          method: datasetExists ? 'PUT' : 'POST',
-          url: datasetExists ? `api/v1/datasets/${slug}` : 'api/v1/datasets',
+          method: 'post',
+          url: existing ? `api/v1/datasets/${existing.id}` : 'api/v1/datasets',
           data: formData,
           maxContentLength: Infinity,
           maxBodyLength: Infinity,
@@ -220,7 +254,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
         })
 
         const result = await uploadResponse.data
-        await log.info(`${datasetExists ? 'Mise à jour' : 'Création'} réussie: ${result.title} (ID: ${result.id})`)
+        await log.info(`${existing ? 'Mise à jour' : 'Création'} réussie: ${result.title} (ID: ${result.id})`)
 
         // Image: if ODS exposes a thumbnail for this dataset, fetch it and attach it to the
         // Data-Fair dataset (we don't keep an ODS-hosted URL, since the goal is a clean migration).
@@ -246,7 +280,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
           // Thumbnail not available or upload failed, skip silently
         }
 
-        results.push({ datasetId: odsDataset.dataset_id, title, link, success: true, sizeBytes })
+        results.push({ datasetId: odsDataset.dataset_id, title, link, success: true, sizeBytes, dfId: result.id })
       } catch (err: any) {
         const detail = err.response?.data
         const detailStr = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : ''
@@ -280,11 +314,16 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
   // Related datasets — uses ODS dataset_similarity scoring.
   if (relatedDatasetsThreshold && relatedDatasetsThreshold > 0) {
     await log.step('Construction des jeux de données liés')
-    // Title lookup for successfully imported datasets (we reuse what we already have in memory).
+    // Lookups for successfully imported datasets (reusing what we already have in memory).
+    // relatedDatasets must reference datasets by their Data-Fair id, and the PATCH target is
+    // addressed by its Data-Fair id too — never by the ODS slug.
     const importedTitles = new Map<string, string>()
-    const successIds = new Set(results.filter(r => r.success).map(r => r.datasetId))
+    const slugToDfId = new Map<string, string>()
+    for (const r of results) {
+      if (r.success && r.dfId) slugToDfId.set(r.datasetId, r.dfId)
+    }
     for (const ds of odsDatasets) {
-      if (successIds.has(ds.dataset_id)) {
+      if (slugToDfId.has(ds.dataset_id)) {
         importedTitles.set(ds.dataset_id, ds.metas?.default?.title ?? ds.dataset_id)
       }
     }
@@ -316,10 +355,10 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
           const matches = (res.data?.results || [])
             .filter((r: any) => typeof r.score === 'number' && r.score >= relatedDatasetsThreshold)
             .map((r: any) => r.datasetid)
-            .filter((id: string) => importedTitles.has(id))
+            .filter((id: string) => slugToDfId.has(id))
           if (matches.length) {
-            const relatedDatasets = matches.map((id: string) => ({ id, title: importedTitles.get(id) as string }))
-            await axios.patch(`api/v1/datasets/${datasetId}`, { relatedDatasets })
+            const relatedDatasets = matches.map((id: string) => ({ id: slugToDfId.get(id) as string, title: importedTitles.get(id) as string }))
+            await axios.patch(`api/v1/datasets/${slugToDfId.get(datasetId)}`, { relatedDatasets })
             relatedWithLinks++
           }
         } catch (err: any) {
