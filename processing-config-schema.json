@@ -118,6 +118,16 @@
           "layout": {
             "if": "parent.data.mode === 'import' && parent.data.haveList"
           }
+        },
+        "includeFederated": {
+          "type": "boolean",
+          "title": "Also import federated datasets",
+          "x-i18n-title": { "fr": "Importer aussi les jeux de données fédérés" },
+          "default": false,
+          "description": "When enabled, datasets federated from partner ODS portals are listed (via the shared catalog) and imported too. Their provenance points to the dataset's page on its source portal.",
+          "x-i18n-description": {
+            "fr": "Si activé, les jeux de données fédérés depuis des portails ODS partenaires sont listés (via le catalogue partagé) et importés également. Leur provenance pointe vers la page du jeu sur son portail d'origine."
+          }
         }
       }
     },

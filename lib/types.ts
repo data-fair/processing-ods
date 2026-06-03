@@ -49,6 +49,10 @@ export type OdsDataset = {
       modified?: string;
       metadata_processed?: string;
       references?: string | string[];
+      source_domain?: string;
+      parent_domain?: string;
+      source_dataset?: string;
+      source_domain_address?: string;
       [k: string]: unknown;
     };
     dcat?: {
@@ -77,6 +81,19 @@ export type OdsDataset = {
     [k: string]: unknown;
   }[];
   additionalProperties?: unknown;
+}
+
+// Normalized view of an ODS dataset, abstracting over the /catalog vs /shared shapes.
+// `fullId` is the ODS dataset_id (suffixed with @domain in the shared catalog), used to address the
+// dataset on its source endpoint. `cleanId` is the slug-friendly id (source_dataset when available).
+export type OdsDescriptor = {
+  raw: OdsDataset;
+  fullId: string;
+  cleanId: string;
+  isFederated: boolean;
+  sourceDomain?: string;
+  sourceDomainAddress?: string;
+  sourceDataset?: string;
 }
 
 // Minimal Data-Fair Dataset type for upload result

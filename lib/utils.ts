@@ -1,19 +1,116 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
-import type { LicenseMapping, OdsDataset, ThemeMapping } from './types.ts'
+import type { LicenseMapping, OdsDataset, OdsDescriptor, ThemeMapping } from './types.ts'
 import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
 import { mapFrequency, parseTemporal, mapThemesToTopics, mapLicense, toDate } from './mappings.ts'
 
 import path from 'path'
 import fs from 'fs'
 
-export const fetchOdsDatasets = async (portalUrl: string, axios: any): Promise<OdsDataset[]> => {
+/**
+ * GET an ODS resource, retrying on HTTP 429 (Too Many Requests): the ODS server rate-limits bursts,
+ * so we pause and retry rather than failing the whole dataset. Only 429 is retried — other errors
+ * (4xx/5xx, network) are rethrown immediately. Used for every ODS GET (listing, export, thumbnail,
+ * similarity); Data-Fair calls are not wrapped.
+ */
+export const odsGet = async (
+  axios: any,
+  url: string,
+  config?: any,
+  opts: { log?: { warning: (msg: string) => any }, retries?: number, delayMs?: number } = {}
+): Promise<any> => {
+  const { log, retries = 3, delayMs = 10000 } = opts
+  let attempt = 0
+  while (true) {
+    try {
+      return await axios.get(url, config)
+    } catch (err: any) {
+      const status = err?.status ?? err?.response?.status
+      if (status !== 429 || attempt >= retries) throw err
+      attempt++
+      if (log) await log.warning(`429 reçu de l'API ODS — pause ${delayMs / 1000}s avant nouvelle tentative (${attempt}/${retries})`)
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
+  }
+}
+
+/**
+ * Normalize an ODS dataset into a descriptor that abstracts over the /catalog and /shared shapes.
+ * In the shared catalog every dataset_id is suffixed with `@source_domain` and the clean id lives in
+ * `source_dataset`; a dataset is federated when its `source_domain` differs from `parent_domain`.
+ */
+export const normalizeDescriptor = (raw: OdsDataset): OdsDescriptor => {
+  const def = raw.metas?.default
+  const sourceDomain = def?.source_domain
+  const parentDomain = def?.parent_domain
+  const cleanId = def?.source_dataset || raw.dataset_id
+  return {
+    raw,
+    fullId: raw.dataset_id,
+    cleanId,
+    isFederated: !!sourceDomain && !!parentDomain && sourceDomain !== parentDomain,
+    sourceDomain,
+    sourceDomainAddress: def?.source_domain_address,
+    sourceDataset: def?.source_dataset,
+  }
+}
+
+/**
+ * Resolve the Data-Fair slug to push for each descriptor, keyed by `fullId`.
+ *
+ * Slugs default to the clean id. When the same clean id is carried by datasets of different origins
+ * (local + federated, or two federated domains), keeping the clean slug for all would make them
+ * collide into a single Data-Fair dataset. So on a collision the local dataset keeps the clean slug
+ * and every federated dataset involved is namespaced with its source domain — mirroring how ODS
+ * itself disambiguates with the `@domain` suffix.
+ */
+export const resolveSlugs = (descriptors: OdsDescriptor[]): Map<string, string> => {
+  const byCleanId = new Map<string, OdsDescriptor[]>()
+  for (const d of descriptors) {
+    const list = byCleanId.get(d.cleanId) ?? []
+    list.push(d)
+    byCleanId.set(d.cleanId, list)
+  }
+
+  const slugs = new Map<string, string>()
+  for (const [cleanId, group] of byCleanId) {
+    // fullId is unique, so any group of more than one necessarily mixes origins → it's a collision.
+    const collides = group.length > 1
+    for (const d of group) {
+      slugs.set(d.fullId, collides && d.isFederated ? `${cleanId}-${d.sourceDomain}` : cleanId)
+    }
+  }
+  return slugs
+}
+
+export const fetchOdsDatasets = async (
+  portalUrl: string,
+  axios: any,
+  includeFederated = false,
+  log?: { warning: (msg: string) => any }
+): Promise<OdsDataset[]> => {
   const datasets: OdsDataset[] = []
   const limit = 100
   let offset = 0
+  // The shared catalog adds datasets federated from partner ODS portals; the plain catalog is the
+  // domain's own datasets only. Some portals have no shared source, so the /shared endpoint 404s
+  // ("shared source is not available for domain …"); in that case we fall back to the local catalog.
+  let scope = includeFederated ? 'shared' : 'catalog'
 
   while (true) {
-    const apiUrl = `${portalUrl}/api/explore/v2.1/catalog/datasets?select=exclude(attachments),exclude(alternative_exports)&limit=${limit}&offset=${offset}`
-    const res = await axios.get(apiUrl)
+    const apiUrl = `${portalUrl}/api/explore/v2.1/${scope}/datasets?select=exclude(attachments),exclude(alternative_exports)&limit=${limit}&offset=${offset}`
+    let res
+    try {
+      res = await odsGet(axios, apiUrl, undefined, { log })
+    } catch (err: any) {
+      const status = err?.status ?? err?.response?.status
+      if (scope === 'shared' && offset === 0 && status === 404) {
+        // No shared source on this portal: warn and retry with the local catalog only.
+        await log?.warning('Catalogue partagé indisponible sur ce portail : import des jeux de données fédérés ignoré, seul le catalogue local est utilisé.')
+        scope = 'catalog'
+        continue
+      }
+      throw err
+    }
     if (!res.data || !Array.isArray(res.data.results)) throw new Error('Réponse inattendue de l\'API ODS')
     datasets.push(...res.data.results)
     if (datasets.length >= res.data.total_count || res.data.results.length < limit) break
@@ -144,25 +241,32 @@ export const applyExposure = async (
 }
 
 export const getMetadata = (
-  odsDataset: OdsDataset,
+  descriptor: OdsDescriptor,
+  slug: string,
   portalUrl: string,
   themesMapping?: ThemeMapping[],
   licensesMapping?: LicenseMapping[]
 ): Record<string, any> => {
+  const odsDataset = descriptor.raw
   const dataset: Record<string, any> = {
-    slug: odsDataset.dataset_id,
+    slug,
     title: odsDataset.metas?.default?.title ?? '',
     description: odsDataset.metas?.default?.description ?? '',
     keywords: odsDataset.metas?.default?.keyword ?? [],
     analysis: { escapeKeyAlgorithm: 'compat-ods' },
   }
 
-  // Origin is set only if ODS exposes an explicit source reference. The processing is meant
-  // for migrations, so the ODS portal URL itself is not the provenance.
-  const references = odsDataset.metas?.default?.references
-  const referencesStr = Array.isArray(references) ? references.find(r => typeof r === 'string' && /^https?:\/\//.test(r)) : references
-  if (typeof referencesStr === 'string' && /^https?:\/\//.test(referencesStr)) {
-    dataset.origin = referencesStr
+  if (descriptor.isFederated && descriptor.sourceDomainAddress && descriptor.sourceDataset) {
+    // Federated dataset: the provenance is the dataset's page on the portal it is federated from.
+    dataset.origin = `https://${descriptor.sourceDomainAddress}/explore/dataset/${descriptor.sourceDataset}/`
+  } else {
+    // Origin is set only if ODS exposes an explicit source reference. The processing is meant
+    // for migrations, so the ODS portal URL itself is not the provenance.
+    const references = odsDataset.metas?.default?.references
+    const referencesStr = Array.isArray(references) ? references.find(r => typeof r === 'string' && /^https?:\/\//.test(r)) : references
+    if (typeof referencesStr === 'string' && /^https?:\/\//.test(referencesStr)) {
+      dataset.origin = referencesStr
+    }
   }
 
   const license = mapLicense(
@@ -214,18 +318,22 @@ export const getMetadata = (
   return dataset
 }
 
-export const downloadCSV = async (odsDataset: OdsDataset, context: ProcessingContext<ProcessingConfig>): Promise<string> => {
+export const downloadCSV = async (descriptor: OdsDescriptor, context: ProcessingContext<ProcessingConfig>): Promise<string> => {
   const { processingConfig: { url: portalUrl }, axios, log, tmpDir } = context
 
-  const url = `${portalUrl}/api/explore/v2.1/catalog/datasets/${odsDataset.dataset_id}/exports/csv?compressed=true`
-  const destFile = path.join(tmpDir, `${odsDataset.dataset_id}.csv.gz`)
+  // Federated datasets 404 on /catalog (the @domain-suffixed id only exists in the shared catalog),
+  // so they must be exported through /shared. Local datasets keep the proven /catalog export.
+  const url = descriptor.isFederated
+    ? `${portalUrl}/api/explore/v2.1/shared/datasets/${descriptor.fullId}/exports/csv?compressed=true`
+    : `${portalUrl}/api/explore/v2.1/catalog/datasets/${descriptor.cleanId}/exports/csv?compressed=true`
+  const destFile = path.join(tmpDir, `${descriptor.cleanId}.csv.gz`)
   const writer = fs.createWriteStream(destFile)
 
   try {
-    const response = await axios.get(url, { responseType: 'stream' })
+    const response = await odsGet(axios, url, { responseType: 'stream' }, { log })
 
     let downloadedBytes = 0
-    await log.task(`Téléchargement ${odsDataset.dataset_id}`)
+    await log.task(`Téléchargement ${descriptor.cleanId}`)
 
     const logInterval = 500 // ms
     let lastLogged = Date.now()
@@ -235,7 +343,7 @@ export const downloadCSV = async (odsDataset: OdsDataset, context: ProcessingCon
       const now = Date.now()
       if (now - lastLogged > logInterval) {
         lastLogged = now
-        log.progress(`Téléchargement ${odsDataset.dataset_id}`, downloadedBytes, NaN)
+        log.progress(`Téléchargement ${descriptor.cleanId}`, downloadedBytes, NaN)
       }
     })
 
@@ -255,7 +363,7 @@ export const downloadCSV = async (odsDataset: OdsDataset, context: ProcessingCon
     })
 
     const stats = fs.statSync(destFile)
-    await log.progress(`Téléchargement ${odsDataset.dataset_id}`, stats.size, stats.size)
+    await log.progress(`Téléchargement ${descriptor.cleanId}`, stats.size, stats.size)
 
     return filePath
   } catch (error: any) {

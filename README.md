@@ -8,12 +8,14 @@ Plugin for [data-fair/processings](https://github.com/data-fair/processings) to 
 - **Metadata preservation** — transfers dataset metadata including title, description, keywords, license, and themes
 - **Parallel processing** — handles multiple datasets concurrently for efficient imports
 - **Field mapping** — preserves field definitions from the original ODS datasets
+- **Federated datasets** — optionally import datasets federated from partner ODS portals (via the shared catalog), with provenance pointing to their source portal
 
 ## Configuration
 
 | Tab | Field | Description |
 | --- | ----- | ----------- |
 | General | `url` | OpenDataSoft portal URL (e.g., `https://data.example.com`) |
+| Parameters | `includeFederated` | Also list and import datasets federated from partner ODS portals (default: off) |
 
 ## Release
 

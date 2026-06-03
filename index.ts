@@ -1,6 +1,6 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
 import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
-import { fetchOdsDatasets, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV } from './lib/utils.ts'
+import { fetchOdsDatasets, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV, odsGet, normalizeDescriptor, resolveSlugs } from './lib/utils.ts'
 import { formatBytes } from '@data-fair/lib-utils/format/bytes.js'
 import { createReadStream, statSync } from 'fs'
 import { promisify } from 'util'
@@ -17,6 +17,8 @@ type ImportResult = {
   dfId?: string
   /** True when the source was unchanged: metadata refreshed but the data download was skipped. */
   skipped?: boolean
+  /** True when the dataset comes federated from a partner ODS portal (not the domain's own catalog). */
+  federated?: boolean
   sizeBytes?: number
   error?: string
   code?: string | number
@@ -30,28 +32,38 @@ const logImportReport = async (
 ) => {
   const succeeded = results.filter(r => r.success)
   const skipped = succeeded.filter(r => r.skipped)
+  const federated = succeeded.filter(r => r.federated)
   const failed = results.filter(r => !r.success)
   const totalBytes = succeeded.reduce((sum, r) => sum + (r.sizeBytes ?? 0), 0)
 
   await log.step('Rapport final')
   await log.info(`Jeux de données importés : ${succeeded.length}/${totalDatasets}`)
-  if (skipped.length > 0) {
-    await log.info(`dont ${skipped.length} inchangé(s) (téléchargement ignoré, métadonnées mises à jour)`)
-  }
+  if (skipped.length > 0) await log.info(`  dont inchangés (téléchargement ignoré) : ${skipped.length}`)
+  if (federated.length > 0) await log.info(`  dont fédérés : ${federated.length}`)
   await log.info(`Taille totale importée (compressée) : ${formatBytes(totalBytes)}`)
+  await log.info(`En erreur : ${failed.length}`)
 
-  if (failed.length === 0) {
-    await log.info('Aucun jeu de données en erreur')
-    return
-  }
+  if (failed.length === 0) return
 
-  await log.warning(`${failed.length} jeu(x) de données en erreur (trié par code d'erreur) :`)
-  const sorted = [...failed].sort((a, b) =>
-    String(a.code).localeCompare(String(b.code), undefined, { numeric: true })
-  )
-  for (const r of sorted) {
-    await log.error(`  [${r.code}] ${r.title} — ${r.link} : ${r.error}`)
+  // Group the failures by error code so the summary stays readable, and push the full per-dataset
+  // list into the log "extra" field (collapsible) rather than flooding the main log.
+  const byCode = new Map<string, ImportResult[]>()
+  for (const r of failed) {
+    const code = String(r.code)
+    const list = byCode.get(code) ?? []
+    list.push(r)
+    byCode.set(code, list)
   }
+  const codes = [...byCode.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+
+  await log.warning(`${failed.length} jeu(x) de données en erreur (détail complet en extra) :`)
+  for (const code of codes) {
+    await log.warning(`  [${code}] : ${byCode.get(code)!.length} jeu(x)`)
+  }
+  const details = codes
+    .flatMap(code => byCode.get(code)!.map(r => `[${code}] ${r.title} — ${r.link} : ${r.error}`))
+    .join('\n')
+  await log.error('Liste détaillée des jeux en erreur', details)
 }
 
 // True when an interruption is requested for this processing.
@@ -87,11 +99,11 @@ const buildLicensesSnippet = (licenses: { title: string, href: string }[]): stri
 
 const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
   const { processingConfig, axios, log, patchConfig } = context
-  const { url: portalUrl } = processingConfig
+  const { url: portalUrl, includeFederated } = processingConfig
 
   await log.step('Récupération de la liste des jeux de données ODS')
-  const odsDatasets = await fetchOdsDatasets(portalUrl, axios)
-  await log.info(`${odsDatasets.length} jeux de données trouvés sur le portail ODS`)
+  const odsDatasets = await fetchOdsDatasets(portalUrl, axios, includeFederated, log)
+  await log.info(`${odsDatasets.length} jeux de données trouvés sur le portail ODS${includeFederated ? ' (fédérés inclus)' : ''}`)
 
   // Themes report
   await log.step('Rapport des thématiques')
@@ -164,14 +176,19 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
 
 const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
   const { processingConfig, axios, log, processingId, patchConfig } = context
-  const { url: portalUrl, themes: themesMapping, licenses: licensesMapping, relatedDatasetsThreshold, publicationSite, makePublic } = processingConfig
+  const { url: portalUrl, themes: themesMapping, licenses: licensesMapping, relatedDatasetsThreshold, publicationSite, makePublic, includeFederated } = processingConfig
   // One-shot exposure actions: applied to every dataset during this run, then reset at the end.
   const exposure = { publicationSite, makePublic }
   const exposureRequested = !!publicationSite || !!makePublic
 
   await log.step('Récupération de la liste des jeux de données ODS')
-  const odsDatasets = await fetchOdsDatasets(portalUrl, axios)
-  await log.info(`${odsDatasets.length} jeux de données trouvés sur le portail ODS`)
+  const odsDatasets = await fetchOdsDatasets(portalUrl, axios, includeFederated, log)
+  await log.info(`${odsDatasets.length} jeux de données trouvés sur le portail ODS${includeFederated ? ' (fédérés inclus)' : ''}`)
+
+  // Normalize over the /catalog vs /shared shapes, then resolve the slug to push for each dataset
+  // (clean id, namespaced by source domain only on a cross-origin collision).
+  const descriptors = odsDatasets.map(normalizeDescriptor)
+  const slugs = resolveSlugs(descriptors)
 
   // Index existing Data-Fair datasets by slug, so re-runs update them in place (by their
   // Data-Fair-generated id) instead of creating slug-suffixed duplicates.
@@ -185,29 +202,30 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
   const results: ImportResult[] = []
 
   let completedCount = 0
-  const totalDatasets = odsDatasets.length
+  const totalDatasets = descriptors.length
+  // Emit the global progress bar up front so it sits at the top of the section, before any download.
+  await log.progress('Progression globale', 0, totalDatasets)
 
-  for (const odsDataset of odsDatasets) {
+  for (const descriptor of descriptors) {
     if (shouldBeStopped) break
     while (activeDownloads.size >= MAX_PARALLEL) {
       if (shouldBeStopped) break
       await new Promise(resolve => setTimeout(resolve, 100))
     }
     if (shouldBeStopped) break
-    activeDownloads.add(odsDataset.dataset_id)
+    activeDownloads.add(descriptor.fullId)
 
-    const title = odsDataset.metas?.default?.title ?? odsDataset.dataset_id
-    const link = `${portalUrl}/explore/dataset/${odsDataset.dataset_id}/information/`
+    const slug = slugs.get(descriptor.fullId) as string
+    const title = descriptor.raw.metas?.default?.title ?? descriptor.cleanId
+    const link = `${portalUrl}/explore/dataset/${descriptor.fullId}/information/`
 
     const processDataset = async () => {
       // Tracks how far we got, so the error report can attribute the failure precisely.
       let stage: 'download' | 'upload' = 'download'
       try {
-        const slug = odsDataset.dataset_id
-
         // Build metadata with theme/license mapping. getMetadata also resolves the ODS "modified"
         // date (YYYY-MM-DD) into metadata.modified, which we compare against Data-Fair below.
-        const metadata = getMetadata(odsDataset, portalUrl, themesMapping, licensesMapping)
+        const metadata = getMetadata(descriptor, slug, portalUrl, themesMapping, licensesMapping)
 
         // Existing dataset (matched by slug during the initial indexing). When present, `existing.id`
         // is the Data-Fair-generated id — we reuse it, we never push an id of our own.
@@ -224,12 +242,12 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
           await axios.patch(`api/v1/datasets/${existing.id}`, metaOnly)
           if (exposureRequested) await applyExposure(axios, log, { id: existing.id, owner: existing.owner, publicationSites: existing.publicationSites }, exposure)
           await log.info(`Inchangé (modified ${metadata.modified}) — métadonnées mises à jour, téléchargement ignoré: ${metadata.title || slug}`)
-          results.push({ datasetId: slug, title, link, success: true, skipped: true, dfId: existing.id })
+          results.push({ datasetId: descriptor.fullId, title, link, success: true, skipped: true, federated: descriptor.isFederated, dfId: existing.id })
           return
         }
 
         // Download CSV
-        const filePath = await downloadCSV(odsDataset, context)
+        const filePath = await downloadCSV(descriptor, context)
         const sizeBytes = statSync(filePath).size
         stage = 'upload'
 
@@ -262,9 +280,12 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
 
         // Image: if ODS exposes a thumbnail for this dataset, fetch it and attach it to the
         // Data-Fair dataset (we don't keep an ODS-hosted URL, since the goal is a clean migration).
-        const thumbUrl = `${portalUrl}/api/explore/v2.1/catalog/datasets/${odsDataset.dataset_id}/thumbnail`
+        // Federated datasets only exist in the shared catalog, so their thumbnail lives there too.
+        const thumbUrl = descriptor.isFederated
+          ? `${portalUrl}/api/explore/v2.1/shared/datasets/${descriptor.fullId}/thumbnail`
+          : `${portalUrl}/api/explore/v2.1/catalog/datasets/${descriptor.cleanId}/thumbnail`
         try {
-          const thumbRes = await axios.get(thumbUrl, { responseType: 'arraybuffer', validateStatus: (s: number) => s < 500 })
+          const thumbRes = await odsGet(axios, thumbUrl, { responseType: 'arraybuffer', validateStatus: (s: number) => s < 500 }, { log })
           const ctRaw = thumbRes.headers?.['content-type']
           const ct = typeof ctRaw === 'string' ? ctRaw : ''
           if (thumbRes.status === 200 && ct.startsWith('image/')) {
@@ -286,16 +307,16 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
 
         if (exposureRequested) await applyExposure(axios, log, { id: result.id, owner: result.owner, publicationSites: result.publicationSites }, exposure)
 
-        results.push({ datasetId: odsDataset.dataset_id, title, link, success: true, sizeBytes, dfId: result.id })
+        results.push({ datasetId: descriptor.fullId, title, link, success: true, sizeBytes, federated: descriptor.isFederated, dfId: result.id })
       } catch (err: any) {
         const detail = err.response?.data
         const detailStr = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : ''
         const stageLabel = stage === 'upload' ? "lors de l'upload vers Data-Fair" : 'lors du téléchargement depuis ODS'
-        const code = err.response?.status ?? err.code ?? 'ERR'
-        await log.error(`Erreur ${stageLabel} pour ${odsDataset.dataset_id}: ${err.message}`, detailStr)
-        results.push({ datasetId: odsDataset.dataset_id, title, link, success: false, error: err.message, code })
+        const code = err.response?.status ?? err.code ?? err.status ?? 'ERR'
+        await log.error(`Erreur ${stageLabel} pour ${descriptor.cleanId}: ${err.message}`, detailStr)
+        results.push({ datasetId: descriptor.fullId, title, link, success: false, error: err.message, code, federated: descriptor.isFederated })
       } finally {
-        activeDownloads.delete(odsDataset.dataset_id)
+        activeDownloads.delete(descriptor.fullId)
         completedCount++
         await log.progress(
           'Progression globale',
@@ -323,16 +344,22 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
     // Lookups for successfully imported datasets (reusing what we already have in memory).
     // relatedDatasets must reference datasets by their Data-Fair id, and the PATCH target is
     // addressed by its Data-Fair id too — never by the ODS slug.
+    // Keyed by the ODS full id (with @domain in the shared catalog), which is what dataset_similarity
+    // returns and what we stored in results.datasetId.
     const importedTitles = new Map<string, string>()
     const slugToDfId = new Map<string, string>()
     for (const r of results) {
       if (r.success && r.dfId) slugToDfId.set(r.datasetId, r.dfId)
     }
-    for (const ds of odsDatasets) {
-      if (slugToDfId.has(ds.dataset_id)) {
-        importedTitles.set(ds.dataset_id, ds.metas?.default?.title ?? ds.dataset_id)
+    for (const d of descriptors) {
+      if (slugToDfId.has(d.fullId)) {
+        importedTitles.set(d.fullId, d.raw.metas?.default?.title ?? d.cleanId)
       }
     }
+    // Similarity must be queried on the same catalog scope as the listing, so federated ids resolve.
+    // Derive it from the actual descriptors (shared ids carry the @domain suffix) rather than the
+    // config flag: a portal without a shared source falls back to the local catalog despite the flag.
+    const scope = descriptors.some(d => d.fullId.includes('@')) ? 'shared' : 'catalog'
     const targets = [...importedTitles.keys()]
     await log.info(`Recherche des jeux similaires (seuil ${relatedDatasetsThreshold}, limite 3) pour ${targets.length} jeux de données`)
 
@@ -356,8 +383,8 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
             order_by: `dataset_similarity("${datasetId}")`,
             limit: '3'
           })
-          const url = `${portalUrl}/api/explore/v2.1/catalog/datasets?${params.toString()}`
-          const res = await axios.get(url)
+          const url = `${portalUrl}/api/explore/v2.1/${scope}/datasets?${params.toString()}`
+          const res = await odsGet(axios, url, undefined, { log })
           const matches = (res.data?.results || [])
             .filter((r: any) => typeof r.score === 'number' && r.score >= relatedDatasetsThreshold)
             .map((r: any) => r.datasetid)
