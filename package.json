@@ -12,6 +12,7 @@
     "test": "npm run test-base test-it/*.ts"
   },
   "imports": {
+    "#config": "./lib/config.ts",
     "#types/*": "./types/*"
   },
   "repository": {

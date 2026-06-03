@@ -9,7 +9,9 @@ export default {
   additionalProperties: false,
   required: [
     'dataFairUrl',
-    'dataFairAPIKey'
+    'dataFairAPIKey',
+    'adminMode',
+    'account'
   ],
   properties: {
     dataFairUrl: {
@@ -17,6 +19,21 @@ export default {
     },
     dataFairAPIKey: {
       type: 'string'
+    },
+    adminMode: {
+      type: 'boolean'
+    },
+    account: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['type', 'id', 'name'],
+      properties: {
+        type: { type: 'string', enum: ['user', 'organization'] },
+        id: { type: 'string' },
+        name: { type: 'string' },
+        department: { type: 'string' },
+        departmentName: { type: 'string' }
+      }
     }
   }
 }
