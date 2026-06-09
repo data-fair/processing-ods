@@ -1,6 +1,6 @@
 import { it, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeDescriptor, resolveSlugs, getMetadata, odsGet } from '../lib/utils.ts'
+import { normalizeDescriptor, resolveSlugs, getMetadata, odsGet, withRetry429, stageLabelFor } from '../lib/utils.ts'
 import type { OdsDataset } from '../lib/types.ts'
 
 describe('normalizeDescriptor', () => {
@@ -136,5 +136,70 @@ describe('odsGet', () => {
     const axios = { get: async () => { attempts++; const e: any = new Error('boom'); e.response = { status: 500 }; throw e } }
     await assert.rejects(odsGet(axios, 'http://ods/x', undefined, { log: silentLog, delayMs: 0 }), /boom/)
     assert.equal(attempts, 1)
+  })
+})
+
+describe('withRetry429', () => {
+  const silentLog = { warning: async () => {} }
+
+  it('returns the result without retrying when the call succeeds', async () => {
+    let attempts = 0
+    const res = await withRetry429(async () => { attempts++; return 'ok' }, { log: silentLog, delayMs: 0 })
+    assert.equal(res, 'ok')
+    assert.equal(attempts, 1)
+  })
+
+  it('retries on 429 (err.response.status) then returns once it succeeds', async () => {
+    let attempts = 0
+    const res = await withRetry429(async () => {
+      attempts++
+      if (attempts < 3) { const e: any = new Error('rate limited'); e.response = { status: 429 }; throw e }
+      return 'ok'
+    }, { log: silentLog, delayMs: 0 })
+    assert.equal(res, 'ok')
+    assert.equal(attempts, 3)
+  })
+
+  it('detects 429 from err.status too', async () => {
+    let attempts = 0
+    const res = await withRetry429(async () => {
+      attempts++
+      if (attempts < 2) { const e: any = new Error('rate limited'); e.status = 429; throw e }
+      return 'ok'
+    }, { log: silentLog, delayMs: 0 })
+    assert.equal(res, 'ok')
+    assert.equal(attempts, 2)
+  })
+
+  it('gives up after the configured number of retries and rethrows the last error', async () => {
+    let attempts = 0
+    await assert.rejects(
+      withRetry429(async () => { attempts++; const e: any = new Error('still 429'); e.status = 429; throw e }, { log: silentLog, retries: 3, delayMs: 0 }),
+      /still 429/
+    )
+    assert.equal(attempts, 4) // 1 initial + 3 retries
+  })
+
+  it('does not retry a non-429 error', async () => {
+    let attempts = 0
+    await assert.rejects(
+      withRetry429(async () => { attempts++; const e: any = new Error('boom'); e.response = { status: 500 }; throw e }, { log: silentLog, delayMs: 0 }),
+      /boom/
+    )
+    assert.equal(attempts, 1)
+  })
+})
+
+describe('stageLabelFor', () => {
+  it('labels the download stage as an ODS download', () => {
+    assert.equal(stageLabelFor('download'), 'lors du téléchargement depuis ODS')
+  })
+
+  it('labels the upload stage as a Data-Fair upload', () => {
+    assert.equal(stageLabelFor('upload'), "lors de l'upload vers Data-Fair")
+  })
+
+  it('labels the metadata-refresh stage as a Data-Fair metadata update, not ODS', () => {
+    assert.equal(stageLabelFor('meta'), 'lors de la mise à jour des métadonnées dans Data-Fair')
   })
 })

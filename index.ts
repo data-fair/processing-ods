@@ -1,6 +1,6 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
 import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
-import { fetchOdsDatasets, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV, odsGet, normalizeDescriptor, resolveSlugs } from './lib/utils.ts'
+import { fetchOdsDatasets, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV, odsGet, dfRetry, stageLabelFor, normalizeDescriptor, resolveSlugs } from './lib/utils.ts'
 import { formatBytes } from '@data-fair/lib-utils/format/bytes.js'
 import { createReadStream, statSync } from 'fs'
 import { promisify } from 'util'
@@ -193,7 +193,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
   // Index existing Data-Fair datasets by slug, so re-runs update them in place (by their
   // Data-Fair-generated id) instead of creating slug-suffixed duplicates.
   await log.step('Indexation des jeux de données déjà présents dans Data-Fair')
-  const existingBySlug = await fetchExistingDatasetsBySlug(axios)
+  const existingBySlug = await fetchExistingDatasetsBySlug(axios, log)
   await log.info(`${existingBySlug.size} jeux de données existants indexés (recherche par slug)`)
 
   await log.step('Téléchargement et upload des jeux de données')
@@ -221,7 +221,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
 
     const processDataset = async () => {
       // Tracks how far we got, so the error report can attribute the failure precisely.
-      let stage: 'download' | 'upload' = 'download'
+      let stage: 'download' | 'upload' | 'meta' = 'download'
       try {
         // Build metadata with theme/license mapping. getMetadata also resolves the ODS "modified"
         // date (YYYY-MM-DD) into metadata.modified, which we compare against Data-Fair below.
@@ -235,11 +235,14 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
         // unchanged, skip the (expensive) download and only refresh the metadata, so mapping
         // changes (topics, licenses…) still get applied. No ODS "modified" date → re-import.
         if (existing && metadata.modified && existing.modified === metadata.modified) {
+          // Metadata-only refresh on Data-Fair (no ODS call here) — track the stage so a failure is
+          // attributed to Data-Fair, not to an ODS download.
+          stage = 'meta'
           const metaOnly: Record<string, any> = { ...metadata }
           delete metaOnly.analysis
           delete metaOnly.schema
           delete metaOnly.slug
-          await axios.patch(`api/v1/datasets/${existing.id}`, metaOnly)
+          await dfRetry(() => axios.patch(`api/v1/datasets/${existing.id}`, metaOnly), log)
           if (exposureRequested) await applyExposure(axios, log, { id: existing.id, owner: existing.owner, publicationSites: existing.publicationSites }, exposure)
           await log.info(`Inchangé (modified ${metadata.modified}) — métadonnées mises à jour, téléchargement ignoré: ${metadata.title || slug}`)
           results.push({ datasetId: descriptor.fullId, title, link, success: true, skipped: true, federated: descriptor.isFederated, dfId: existing.id })
@@ -256,24 +259,25 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
 
         // Upload to Data-Fair: create with POST (Data-Fair generates the id, we only provide the
         // slug) or, when it already exists, update its data via POST on its generated id.
-        const formData = new FormData()
-        formData.append('file', createReadStream(filePath))
-        formData.append('body', JSON.stringify(body))
-
-        const getLength = promisify(formData.getLength.bind(formData))
-        const contentLength = await getLength()
-
-        const uploadResponse = await axios({
-          method: 'post',
-          url: existing ? `api/v1/datasets/${existing.id}` : 'api/v1/datasets',
-          data: formData,
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity,
-          headers: {
-            ...formData.getHeaders(),
-            'content-length': contentLength.toString()
-          }
-        })
+        // The FormData (with its file read stream) is rebuilt on each attempt because a stream can
+        // only be consumed once — so the 429 retry must not reuse a drained body.
+        const uploadResponse = await dfRetry(async () => {
+          const formData = new FormData()
+          formData.append('file', createReadStream(filePath))
+          formData.append('body', JSON.stringify(body))
+          const contentLength = await promisify(formData.getLength.bind(formData))()
+          return axios({
+            method: 'post',
+            url: existing ? `api/v1/datasets/${existing.id}` : 'api/v1/datasets',
+            data: formData,
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            headers: {
+              ...formData.getHeaders(),
+              'content-length': contentLength.toString()
+            }
+          })
+        }, log)
 
         const result = await uploadResponse.data
         await log.info(`${existing ? 'Mise à jour' : 'Création'} réussie: ${result.title} (ID: ${result.id})`)
@@ -291,15 +295,17 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
           if (thumbRes.status === 200 && ct.startsWith('image/')) {
             const ext = ct.split('/')[1].split(';')[0].split('+')[0] || 'png'
             const attachmentName = `thumbnail.${ext}`
-            const attachForm = new FormData()
-            attachForm.append('attachment', Buffer.from(thumbRes.data), { filename: attachmentName, contentType: ct })
-            const attachLen = await promisify(attachForm.getLength.bind(attachForm))()
-            await axios.post(`api/v1/datasets/${result.id}/metadata-attachments`, attachForm, {
-              maxContentLength: Infinity,
-              maxBodyLength: Infinity,
-              headers: { ...attachForm.getHeaders(), 'content-length': attachLen.toString() }
-            })
-            await axios.patch(`api/v1/datasets/${result.id}`, { image: `api/v1/datasets/${result.id}/metadata-attachments/${attachmentName}` })
+            await dfRetry(async () => {
+              const attachForm = new FormData()
+              attachForm.append('attachment', Buffer.from(thumbRes.data), { filename: attachmentName, contentType: ct })
+              const attachLen = await promisify(attachForm.getLength.bind(attachForm))()
+              return axios.post(`api/v1/datasets/${result.id}/metadata-attachments`, attachForm, {
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+                headers: { ...attachForm.getHeaders(), 'content-length': attachLen.toString() }
+              })
+            }, log)
+            await dfRetry(() => axios.patch(`api/v1/datasets/${result.id}`, { image: `api/v1/datasets/${result.id}/metadata-attachments/${attachmentName}` }), log)
           }
         } catch {
           // Thumbnail not available or upload failed, skip silently
@@ -311,7 +317,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
       } catch (err: any) {
         const detail = err.response?.data
         const detailStr = typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : ''
-        const stageLabel = stage === 'upload' ? "lors de l'upload vers Data-Fair" : 'lors du téléchargement depuis ODS'
+        const stageLabel = stageLabelFor(stage)
         const code = err.response?.status ?? err.code ?? err.status ?? 'ERR'
         await log.error(`Erreur ${stageLabel} pour ${descriptor.cleanId}: ${err.message}`, detailStr)
         results.push({ datasetId: descriptor.fullId, title, link, success: false, error: err.message, code, federated: descriptor.isFederated })
@@ -391,7 +397,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
             .filter((id: string) => slugToDfId.has(id))
           if (matches.length) {
             const relatedDatasets = matches.map((id: string) => ({ id: slugToDfId.get(id) as string, title: importedTitles.get(id) as string }))
-            await axios.patch(`api/v1/datasets/${slugToDfId.get(datasetId)}`, { relatedDatasets })
+            await dfRetry(() => axios.patch(`api/v1/datasets/${slugToDfId.get(datasetId)}`, { relatedDatasets }), log)
             relatedWithLinks++
           }
         } catch (err: any) {

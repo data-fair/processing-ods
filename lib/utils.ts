@@ -6,31 +6,54 @@ import { mapFrequency, parseTemporal, mapThemesToTopics, mapLicense, toDate } fr
 import path from 'path'
 import fs from 'fs'
 
+type Retry429Opts = { log?: { warning: (msg: string) => any }, retries?: number, delayMs?: number, source?: string }
+
 /**
- * GET an ODS resource, retrying on HTTP 429 (Too Many Requests): the ODS server rate-limits bursts,
- * so we pause and retry rather than failing the whole dataset. Only 429 is retried — other errors
- * (4xx/5xx, network) are rethrown immediately. Used for every ODS GET (listing, export, thumbnail,
- * similarity); Data-Fair calls are not wrapped.
+ * Run an async call, retrying on HTTP 429 (Too Many Requests): both ODS and Data-Fair rate-limit
+ * bursts, so we pause and retry rather than failing the whole dataset. Only 429 is retried — other
+ * errors (4xx/5xx, network) are rethrown immediately. `fn` is a thunk so the request is rebuilt on
+ * each attempt (important for stream/FormData bodies, which can only be consumed once). `source` is
+ * only used in the warning message to name the rate-limited API.
  */
-export const odsGet = async (
-  axios: any,
-  url: string,
-  config?: any,
-  opts: { log?: { warning: (msg: string) => any }, retries?: number, delayMs?: number } = {}
-): Promise<any> => {
-  const { log, retries = 3, delayMs = 10000 } = opts
+export const withRetry429 = async <T>(fn: () => Promise<T>, opts: Retry429Opts = {}): Promise<T> => {
+  const { log, retries = 3, delayMs = 10000, source = "l'API ODS" } = opts
   let attempt = 0
   while (true) {
     try {
-      return await axios.get(url, config)
+      return await fn()
     } catch (err: any) {
       const status = err?.status ?? err?.response?.status
       if (status !== 429 || attempt >= retries) throw err
       attempt++
-      if (log) await log.warning(`429 reçu de l'API ODS — pause ${delayMs / 1000}s avant nouvelle tentative (${attempt}/${retries})`)
+      if (log) await log.warning(`429 reçu de ${source} — pause ${delayMs / 1000}s avant nouvelle tentative (${attempt}/${retries})`)
       await new Promise(resolve => setTimeout(resolve, delayMs))
     }
   }
+}
+
+/**
+ * GET an ODS resource with the 429 retry. Used for every ODS GET (listing, export, thumbnail,
+ * similarity).
+ */
+export const odsGet = (
+  axios: any,
+  url: string,
+  config?: any,
+  opts: Retry429Opts = {}
+): Promise<any> => withRetry429(() => axios.get(url, config), opts)
+
+/**
+ * Run a Data-Fair call with the 429 retry. Same logic as ODS, only the warning wording differs so
+ * the logs make clear which API is throttling.
+ */
+export const dfRetry = <T>(fn: () => Promise<T>, log?: { warning: (msg: string) => any }): Promise<T> =>
+  withRetry429(fn, { log, source: 'Data-Fair' })
+
+/** Human-readable French label for the stage a dataset failed at, used in the error report. */
+export const stageLabelFor = (stage: 'download' | 'upload' | 'meta'): string => {
+  if (stage === 'upload') return "lors de l'upload vers Data-Fair"
+  if (stage === 'meta') return 'lors de la mise à jour des métadonnées dans Data-Fair'
+  return 'lors du téléchargement depuis ODS'
 }
 
 /**
@@ -135,7 +158,7 @@ export type ExistingDataset = {
   publicationSites?: string[]
 }
 
-export const fetchExistingDatasetsBySlug = async (axios: any): Promise<Map<string, ExistingDataset>> => {
+export const fetchExistingDatasetsBySlug = async (axios: any, log?: { warning: (msg: string) => any }): Promise<Map<string, ExistingDataset>> => {
   const bySlug = new Map<string, ExistingDataset>()
   const size = 1000
   let page = 1
@@ -143,7 +166,7 @@ export const fetchExistingDatasetsBySlug = async (axios: any): Promise<Map<strin
   // owner + publicationSites are selected so the "publish" / "make public" actions can be applied
   // on the skip path (unchanged datasets) without an extra GET per dataset.
   while (true) {
-    const res = await axios.get(`api/v1/datasets?size=${size}&page=${page}&select=id,slug,modified,owner,publicationSites`)
+    const res = await dfRetry(() => axios.get(`api/v1/datasets?size=${size}&page=${page}&select=id,slug,modified,owner,publicationSites`), log)
     const results = res.data?.results ?? []
     for (const ds of results) {
       if (ds.slug) bySlug.set(ds.slug, { id: ds.id, modified: ds.modified, owner: ds.owner, publicationSites: ds.publicationSites })
@@ -218,7 +241,7 @@ export const applyExposure = async (
     try {
       const current = Array.isArray(dataset.publicationSites) ? dataset.publicationSites : []
       if (!current.includes(opts.publicationSite)) {
-        await axios.patch(`api/v1/datasets/${id}`, { publicationSites: [...current, opts.publicationSite] })
+        await dfRetry(() => axios.patch(`api/v1/datasets/${id}`, { publicationSites: [...current, opts.publicationSite] }), log)
       }
     } catch (err: any) {
       const detail = err.response?.data
@@ -230,9 +253,9 @@ export const applyExposure = async (
   if (opts.makePublic) {
     try {
       const owner = dataset.owner ?? {}
-      const current = (await axios.get(`api/v1/datasets/${id}/permissions`)).data ?? []
+      const current = (await dfRetry(() => axios.get(`api/v1/datasets/${id}/permissions`), log)).data ?? []
       const kept = (Array.isArray(current) ? current : []).filter((p: any) => !isManagedPermission(p, owner))
-      await axios.put(`api/v1/datasets/${id}/permissions`, [...kept, ...buildPublicPermissions(owner)])
+      await dfRetry(() => axios.put(`api/v1/datasets/${id}/permissions`, [...kept, ...buildPublicPermissions(owner)]), log)
     } catch (err: any) {
       const detail = err.response?.data
       await log.error(`Erreur lors de la mise en public pour ${id}: ${err.message}`, typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : '')
