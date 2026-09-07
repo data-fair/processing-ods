@@ -1,6 +1,6 @@
 import { it, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeDescriptor, resolveSlugs, getMetadata, odsGet, withRetry429, stageLabelFor } from '../lib/utils.ts'
+import { normalizeDescriptor, resolveSlugs, getMetadata, odsGet, withRetry429, stageLabelFor, createOdsAxios } from '../lib/utils.ts'
 import type { OdsDataset } from '../lib/types.ts'
 
 describe('normalizeDescriptor', () => {
@@ -187,6 +187,40 @@ describe('withRetry429', () => {
       /boom/
     )
     assert.equal(attempts, 1)
+  })
+})
+
+describe('createOdsAxios', () => {
+  it('returns the original axios unchanged without an API key', () => {
+    const axios = { get: async () => ({}) }
+    assert.equal(createOdsAxios(axios), axios)
+    assert.equal(createOdsAxios(axios, ''), axios)
+  })
+
+  it('injects the Apikey authorization header on ODS requests', async () => {
+    let seenConfig: any = null
+    const axios = { get: async (_url: string, config?: any) => { seenConfig = config; return { data: 'ok' } } }
+    const odsAxios = createOdsAxios(axios, 'my-key')
+    await odsAxios.get('https://ods.example.com/api/explore/v2.1/catalog/datasets')
+    assert.equal(seenConfig.headers.Authorization, 'Apikey my-key')
+  })
+
+  it('preserves the rest of the request config (responseType, existing headers)', async () => {
+    let seenConfig: any = null
+    const axios = { get: async (_url: string, config?: any) => { seenConfig = config; return {} } }
+    const odsAxios = createOdsAxios(axios, 'my-key')
+    await odsAxios.get('https://ods.example.com/exports/csv', { responseType: 'stream', headers: { Accept: 'text/csv' } })
+    assert.equal(seenConfig.responseType, 'stream')
+    assert.equal(seenConfig.headers.Accept, 'text/csv')
+    assert.equal(seenConfig.headers.Authorization, 'Apikey my-key')
+  })
+
+  it('does not mutate the wrapped axios config when no config is given', async () => {
+    let seenConfig: any = null
+    const axios = { get: async (_url: string, config?: any) => { seenConfig = config; return {} } }
+    const odsAxios = createOdsAxios(axios, 'my-key')
+    await odsAxios.get('https://ods.example.com/api/explore/v2.1/catalog/facets?facet=theme')
+    assert.deepEqual(seenConfig, { headers: { Authorization: 'Apikey my-key' } })
   })
 })
 

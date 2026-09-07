@@ -1,6 +1,6 @@
-import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
+import type { ProcessingContext, PrepareFunction } from '@data-fair/lib-common-types/processings.js'
 import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
-import { fetchOdsDatasets, fetchOdsFacetValues, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV, odsGet, dfRetry, stageLabelFor, normalizeDescriptor, resolveSlugs } from './lib/utils.ts'
+import { fetchOdsDatasets, fetchOdsFacetValues, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV, odsGet, dfRetry, stageLabelFor, normalizeDescriptor, resolveSlugs, createOdsAxios } from './lib/utils.ts'
 import { formatBytes } from '@data-fair/lib-utils/format/bytes.js'
 import { createReadStream, statSync } from 'fs'
 import { promisify } from 'util'
@@ -98,11 +98,15 @@ const buildLicensesSnippet = (licenses: { title: string, href: string }[]): stri
 }
 
 const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
-  const { processingConfig, axios, log, patchConfig } = context
+  const { processingConfig, axios, secrets, log, patchConfig } = context
   const { url: portalUrl, includeFederated } = processingConfig
+  // Authenticated ODS client when an API key is configured (no-op otherwise) — it drives the
+  // listing below and the facet fetch used to pre-fill the mapping lists.
+  const odsAxios = createOdsAxios(axios, secrets?.apiKey)
+  if (secrets?.apiKey) await log.info('Authentification ODS par clé API activée (jeux de données privés inclus).')
 
   await log.step('Récupération de la liste des jeux de données ODS')
-  const odsDatasets = await fetchOdsDatasets(portalUrl, axios, includeFederated, log)
+  const odsDatasets = await fetchOdsDatasets(portalUrl, odsAxios, includeFederated, log)
   await log.info(`${odsDatasets.length} jeux de données trouvés sur le portail ODS${includeFederated ? ' (fédérés inclus)' : ''}`)
 
   // Themes report
@@ -178,8 +182,8 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
   const patch: Record<string, unknown> = { mode: 'import', haveList: true }
   try {
     const [themeValues, licenseValues] = await Promise.all([
-      fetchOdsFacetValues(portalUrl, axios, 'theme', log),
-      fetchOdsFacetValues(portalUrl, axios, 'license', log)
+      fetchOdsFacetValues(portalUrl, odsAxios, 'theme', log),
+      fetchOdsFacetValues(portalUrl, odsAxios, 'license', log)
     ])
     const previousThemes = processingConfig.themes || []
     const previousLicenses = processingConfig.licenses || []
@@ -194,14 +198,19 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
 }
 
 const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
-  const { processingConfig, axios, log, processingId, patchConfig } = context
+  const { processingConfig, axios, secrets, log, processingId, patchConfig } = context
   const { url: portalUrl, themes: themesMapping, licenses: licensesMapping, relatedDatasetsThreshold, publicationSite, makePublic, includeFederated } = processingConfig
+  // Authenticated ODS client when an API key is configured (no-op otherwise) — used for every
+  // ODS call of the run (listing, CSV export, thumbnail, similarity). Data-Fair calls keep the
+  // context axios.
+  const odsAxios = createOdsAxios(axios, secrets?.apiKey)
+  if (secrets?.apiKey) await log.info('Authentification ODS par clé API activée (jeux de données privés inclus).')
   // One-shot exposure actions: applied to every dataset during this run, then reset at the end.
   const exposure = { publicationSite, makePublic }
   const exposureRequested = !!publicationSite || !!makePublic
 
   await log.step('Récupération de la liste des jeux de données ODS')
-  const odsDatasets = await fetchOdsDatasets(portalUrl, axios, includeFederated, log)
+  const odsDatasets = await fetchOdsDatasets(portalUrl, odsAxios, includeFederated, log)
   await log.info(`${odsDatasets.length} jeux de données trouvés sur le portail ODS${includeFederated ? ' (fédérés inclus)' : ''}`)
 
   // Normalize over the /catalog vs /shared shapes, then resolve the slug to push for each dataset
@@ -268,8 +277,8 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
           return
         }
 
-        // Download CSV
-        const filePath = await downloadCSV(descriptor, context)
+        // Download CSV — through the authenticated ODS client (private datasets require it).
+        const filePath = await downloadCSV(descriptor, { ...context, axios: odsAxios })
         const sizeBytes = statSync(filePath).size
         stage = 'upload'
 
@@ -308,7 +317,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
           ? `${portalUrl}/api/explore/v2.1/shared/datasets/${descriptor.fullId}/thumbnail`
           : `${portalUrl}/api/explore/v2.1/catalog/datasets/${descriptor.cleanId}/thumbnail`
         try {
-          const thumbRes = await odsGet(axios, thumbUrl, { responseType: 'arraybuffer', validateStatus: (s: number) => s < 500 }, { log })
+          const thumbRes = await odsGet(odsAxios, thumbUrl, { responseType: 'arraybuffer', validateStatus: (s: number) => s < 500 }, { log })
           const ctRaw = thumbRes.headers?.['content-type']
           const ct = typeof ctRaw === 'string' ? ctRaw : ''
           if (thumbRes.status === 200 && ct.startsWith('image/')) {
@@ -409,7 +418,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
             limit: '3'
           })
           const url = `${portalUrl}/api/explore/v2.1/${scope}/datasets?${params.toString()}`
-          const res = await odsGet(axios, url, undefined, { log })
+          const res = await odsGet(odsAxios, url, undefined, { log })
           const matches = (res.data?.results || [])
             .filter((r: any) => typeof r.score === 'number' && r.score >= relatedDatasetsThreshold)
             .map((r: any) => r.datasetid)
@@ -445,6 +454,11 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
   }
 
   await logImportReport(log, results, totalDatasets)
+}
+
+// Moves the ODS API key from the config into the secrets store when the configuration is saved.
+export const prepare: PrepareFunction<ProcessingConfig> = async (context) => {
+  return (await import('./lib/prepare.ts')).default(context)
 }
 
 export const run = async (context: ProcessingContext<ProcessingConfig>) => {

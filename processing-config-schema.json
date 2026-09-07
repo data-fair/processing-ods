@@ -76,6 +76,18 @@
           "errorMessage": "The URL must start with http:// or https:// and must not end with a slash",
           "examples": ["https://data.mon-domaine.fr"]
         },
+        "apiKey": {
+          "type": "string",
+          "title": "ODS API key",
+          "x-i18n-title": { "fr": "Clé API ODS" },
+          "description": "Optional. Authenticates requests to the ODS portal (`Authorization: Apikey <key>`), so private/restricted datasets are also listed and imported. Create the key on the ODS portal (your profile page > **My API keys**) with an account that can read these datasets. The key is stored in the processing's secrets when the configuration is saved. Without a key only public datasets are imported: private ones then show up as 401/403 errors in the final report. Note: the key grants access on the configured portal only — private datasets federated from partner portals stay inaccessible.",
+          "x-i18n-description": {
+            "fr": "Optionnelle. Authentifie les requêtes vers le portail ODS (`Authorization: Apikey <clé>`), pour lister et importer également les jeux de données privés/restreints. Créez la clé sur le portail ODS (page de votre profil > **Mes clés API**) avec un compte ayant accès à ces jeux. La clé est stockée dans les secrets du processing à l'enregistrement de la configuration. Sans clé, seuls les jeux publics sont importés : les jeux privés remontent alors en erreur 401/403 dans le rapport final. NB : la clé ne vaut que pour le portail configuré — les jeux privés fédérés depuis des portails partenaires restent inaccessibles."
+          },
+          "layout": {
+            "props": { "type": "password", "autocomplete": "new-password" }
+          }
+        },
         "relatedDatasetsThreshold": {
           "type": "number",
           "title": "Related datasets — minimum similarity score",

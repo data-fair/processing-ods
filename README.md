@@ -9,12 +9,14 @@ Plugin for [data-fair/processings](https://github.com/data-fair/processings) to 
 - **Parallel processing** — handles multiple datasets concurrently for efficient imports
 - **Field mapping** — preserves field definitions from the original ODS datasets
 - **Federated datasets** — optionally import datasets federated from partner ODS portals (via the shared catalog), with provenance pointing to their source portal
+- **Private datasets** — optional ODS API key (sent as `Authorization: Apikey <key>`) to also list and import private/restricted datasets, including their themes and licenses in the mapping step
 
 ## Configuration
 
 | Tab | Field | Description |
 | --- | ----- | ----------- |
 | General | `url` | OpenDataSoft portal URL (e.g., `https://data.example.com`) |
+| Parameters | `apiKey` | Optional ODS API key, required only to import private/restricted datasets (created on the portal, profile page > *My API keys*). Stored in the processing's secrets. |
 | Parameters | `includeFederated` | Also list and import datasets federated from partner ODS portals (default: off) |
 
 ## Release

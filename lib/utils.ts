@@ -43,6 +43,24 @@ export const odsGet = (
 ): Promise<any> => withRetry429(() => axios.get(url, config), opts)
 
 /**
+ * Return the axios instance to use for ODS calls. Without an API key the processing context's
+ * axios is returned unchanged (anonymous calls, public datasets only). With a key, a thin wrapper
+ * injects `Authorization: Apikey <key>` on every ODS GET so private/restricted datasets become
+ * visible. The context axios is wrapped rather than replaced on purpose: it carries the worker's
+ * http agents, redirect settings and retry setup, and its request interceptor only attaches the
+ * Data-Fair credentials to Data-Fair URLs, so an absolute ODS URL never receives them.
+ */
+export const createOdsAxios = (axios: any, apiKey?: string): any => {
+  if (!apiKey) return axios
+  return {
+    get: (url: string, config: any = {}) => axios.get(url, {
+      ...config,
+      headers: { ...config.headers, Authorization: `Apikey ${apiKey}` }
+    })
+  }
+}
+
+/**
  * Run a Data-Fair call with the 429 retry. Same logic as ODS, only the warning wording differs so
  * the logs make clear which API is throttling.
  */
