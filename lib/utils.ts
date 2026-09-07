@@ -144,6 +144,23 @@ export const fetchOdsDatasets = async (
 }
 
 /**
+ * List the values of an ODS facet (theme, license, ...) for a portal (local catalog only, no
+ * /shared scope). Used by the analysis to pre-fill the mapping tables directly into the config,
+ * without any browser-side getItems fetch.
+ */
+export const fetchOdsFacetValues = async (
+  portalUrl: string,
+  axios: any,
+  facet: string,
+  log?: { warning: (msg: string) => any }
+): Promise<string[]> => {
+  const res = await odsGet(axios, `${portalUrl}/api/explore/v2.1/catalog/facets?facet=${facet}`, undefined, { log })
+  const values = res.data?.facets?.[0]?.facets
+  if (!Array.isArray(values)) return []
+  return values.map((f: any) => f.value).filter((v: any) => typeof v === 'string')
+}
+
+/**
  * Index the datasets already present in Data-Fair, keyed by slug.
  *
  * Data-Fair only resolves a slug in the `/datasets/{id}` URL when called from a portal, which is
@@ -231,7 +248,7 @@ export const applyExposure = async (
   axios: any,
   log: any,
   dataset: { id: string, owner?: Owner, publicationSites?: string[] },
-  opts: { publicationSite?: string, makePublic?: boolean }
+  opts: { publicationSite?: string | null, makePublic?: boolean }
 ): Promise<void> => {
   const { id } = dataset
 

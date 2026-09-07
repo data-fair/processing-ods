@@ -1,6 +1,6 @@
 import type { ProcessingContext } from '@data-fair/lib-common-types/processings.js'
 import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
-import { fetchOdsDatasets, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV, odsGet, dfRetry, stageLabelFor, normalizeDescriptor, resolveSlugs } from './lib/utils.ts'
+import { fetchOdsDatasets, fetchOdsFacetValues, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV, odsGet, dfRetry, stageLabelFor, normalizeDescriptor, resolveSlugs } from './lib/utils.ts'
 import { formatBytes } from '@data-fair/lib-utils/format/bytes.js'
 import { createReadStream, statSync } from 'fs'
 import { promisify } from 'util'
@@ -170,7 +170,26 @@ const runAnalyse = async (context: ProcessingContext<ProcessingConfig>) => {
 
   // Switch to import mode and unlock the "Importer" action.
   await log.step('Activation du mode import')
-  await patchConfig({ mode: 'import', haveList: true } as any)
+  // The mapping lists and `makePublic` are also written here so that the stored config already
+  // holds everything the config form would compute on its own once the import tabs become visible
+  // (`themes` / `licenses` fed by the ODS facets, `makePublic` from its schema default). Without
+  // it the form is dirty as soon as it is opened and the user has to hit "Enregistrer" after the
+  // analysis for nothing. Existing mappings are preserved when the analysis is run again.
+  const patch: Record<string, unknown> = { mode: 'import', haveList: true }
+  try {
+    const [themeValues, licenseValues] = await Promise.all([
+      fetchOdsFacetValues(portalUrl, axios, 'theme', log),
+      fetchOdsFacetValues(portalUrl, axios, 'license', log)
+    ])
+    const previousThemes = processingConfig.themes || []
+    const previousLicenses = processingConfig.licenses || []
+    patch.themes = themeValues.map(value => previousThemes.find(t => t.value === value) || { value, dataFairThemes: [] })
+    patch.licenses = licenseValues.map(value => previousLicenses.find(l => l.value === value) || { value })
+  } catch (err: any) {
+    await log.warning(`Impossible de pré-remplir les mappings depuis les facettes ODS : ${err?.message || err}`)
+  }
+  if (processingConfig.makePublic === undefined) patch.makePublic = false
+  await patchConfig(patch as any)
   await log.info('Basculé en mode "Importer les jeux de données". Configurez le mapping des thématiques dans l\'onglet correspondant.')
 }
 

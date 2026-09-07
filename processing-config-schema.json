@@ -88,7 +88,8 @@
           "minimum": 0
         },
         "publicationSite": {
-          "type": "string",
+          "comment": "Nullable because the end-of-run reset writes null through patchConfig, which can only merge keys (never delete them). Without null in the type json-layout would drop the property when the form loads, leaving the form dirty and popping a \"save\" button after each run.",
+          "type": ["string", "null"],
           "title": "Publish on a portal",
           "x-i18n-title": { "fr": "Publier sur un portail" },
           "description": "One-shot action: the imported datasets are published on the selected portal during this run, then the selection is cleared at the end of the run. Existing publications on other portals are preserved.",
@@ -153,15 +154,8 @@
           "layout": {
             "comp": "list",
             "listEditMode": "inline",
-            "density": "compact",
-            "getItems": {
-              "url": {
-                "expr": "parent.data.url ? `${parent.data.url}/api/explore/v2.1/catalog/facets?facet=license` : undefined",
-                "type": "js-eval"
-              },
-              "itemsResults": "data.facets[0]?.facets",
-              "itemKey": "item.value"
-            }
+            "listActions": [],
+            "density": "compact"
           },
           "items": {
             "type": "object",
@@ -223,15 +217,8 @@
           "layout": {
             "comp": "list",
             "listEditMode": "inline",
-            "density": "compact",
-            "getItems": {
-              "url": {
-                "expr": "parent.data.url ? `${parent.data.url}/api/explore/v2.1/catalog/facets?facet=theme` : undefined",
-                "type": "js-eval"
-              },
-              "itemsResults": "data.facets[0]?.facets",
-              "itemKey": "item.value"
-            }
+            "listActions": [],
+            "density": "compact"
           },
           "items": {
             "type": "object",
