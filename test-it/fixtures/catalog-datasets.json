@@ -1,0 +1,69 @@
+{
+  "total_count": 2,
+  "results": [
+    {
+      "dataset_id": "restaurants",
+      "dataset_uid": "datapta_1",
+      "has_records": true,
+      "data_visible": true,
+      "metas": {
+        "default": {
+          "title": "Restaurants scolaires",
+          "description": "Liste des restaurants scolaires de la ville",
+          "keyword": ["restauration", "écoles"],
+          "theme": ["Consommation"],
+          "license": "Licence Ouverte",
+          "license_url": "https://www.etalab.gouv.fr/licence-ouverte-open-licence",
+          "modified": "2024-05-03T10:12:00+00:00",
+          "metadata_processed": "2024-05-04T02:00:00+00:00",
+          "references": "https://www.example.com/restaurants",
+          "source_domain": "mock-portal.test",
+          "parent_domain": "mock-portal.test"
+        },
+        "dcat": {
+          "spatial": "Corbeil-Essonnes",
+          "accrualperiodicity": "annual",
+          "creator": "Ville de test"
+        }
+      },
+      "fields": [
+        {
+          "name": "nom_etablissement",
+          "label": "Nom de l'établissement",
+          "type": "text",
+          "description": "Nom commercial de l'établissement"
+        },
+        {
+          "name": "coordgeo",
+          "label": "Coordonnées géographiques",
+          "type": "geo_point_2d",
+          "description": "Position de l'établissement"
+        }
+      ]
+    },
+    {
+      "dataset_id": "marches-publics",
+      "dataset_uid": "datapta_2",
+      "has_records": true,
+      "data_visible": true,
+      "metas": {
+        "default": {
+          "title": "Marchés publics",
+          "description": "Attribution des marchés publics",
+          "keyword": ["commande publique"],
+          "theme": ["Finances"],
+          "modified": "2024-03-18T08:30:00+00:00",
+          "source_domain": "mock-portal.test",
+          "parent_domain": "mock-portal.test"
+        }
+      },
+      "fields": [
+        {
+          "name": "objet",
+          "label": "Objet du marché",
+          "type": "text"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "facets": [
+    {
+      "name": "theme",
+      "facets": [
+        { "value": "Consommation", "count": 1 },
+        { "value": "Finances", "count": 1 }
+      ]
+    }
+  ]
+}
