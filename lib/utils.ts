@@ -182,7 +182,9 @@ export const fetchOdsFacetValues = async (
  * Index the datasets already present in Data-Fair, keyed by slug.
  *
  * Data-Fair only resolves a slug in the `/datasets/{id}` URL when called from a portal, which is
- * not our case here, and the list endpoint has no slug filter. So to find a previously imported
+ * not our case here, and the list endpoint has no slug filter. `mine=true` restricts the listing to
+ * the processing's own account: without it every public dataset of the platform is listed, and a
+ * dataset of another owner sharing a slug would be targeted for the update. So to find a previously imported
  * dataset (and reuse its Data-Fair-generated id) without ever pushing an id ourselves, we list the
  * account's datasets once and build a slug -> { id, modified } map.
  */
@@ -201,7 +203,7 @@ export const fetchExistingDatasetsBySlug = async (axios: any, log?: { warning: (
   // owner + publicationSites are selected so the "publish" / "make public" actions can be applied
   // on the skip path (unchanged datasets) without an extra GET per dataset.
   while (true) {
-    const res = await dfRetry(() => axios.get(`api/v1/datasets?size=${size}&page=${page}&select=id,slug,modified,owner,publicationSites`), log)
+    const res = await dfRetry(() => axios.get(`api/v1/datasets?mine=true&size=${size}&page=${page}&select=id,slug,modified,owner,publicationSites`), log)
     const results = res.data?.results ?? []
     for (const ds of results) {
       if (ds.slug) bySlug.set(ds.slug, { id: ds.id, modified: ds.modified, owner: ds.owner, publicationSites: ds.publicationSites })
