@@ -5,6 +5,8 @@ import { mapFrequency, parseTemporal, mapThemesToTopics, mapLicense, toDate } fr
 
 import path from 'path'
 import fs from 'fs'
+import { promisify } from 'util'
+import FormData from 'form-data'
 
 type Retry429Opts = { log?: { warning: (msg: string) => any }, retries?: number, delayMs?: number, source?: string }
 
@@ -138,7 +140,7 @@ export const fetchOdsDatasets = async (
   let scope = includeFederated ? 'shared' : 'catalog'
 
   while (true) {
-    const apiUrl = `${portalUrl}/api/explore/v2.1/${scope}/datasets?select=exclude(attachments),exclude(alternative_exports)&limit=${limit}&offset=${offset}`
+    const apiUrl = `${portalUrl}/api/explore/v2.1/${scope}/datasets?select=exclude(alternative_exports)&limit=${limit}&offset=${offset}`
     let res
     try {
       res = await odsGet(axios, apiUrl, undefined, { log })
@@ -182,17 +184,19 @@ export const fetchOdsFacetValues = async (
  * Index the datasets already present in Data-Fair, keyed by slug.
  *
  * Data-Fair only resolves a slug in the `/datasets/{id}` URL when called from a portal, which is
- * not our case here, and the list endpoint has no slug filter. `mine=true` restricts the listing to
- * the processing's own account: without it every public dataset of the platform is listed, and a
- * dataset of another owner sharing a slug would be targeted for the update. So to find a previously imported
+ * not our case here, and the list endpoint has no slug filter. So to find a previously imported
  * dataset (and reuse its Data-Fair-generated id) without ever pushing an id ourselves, we list the
- * account's datasets once and build a slug -> { id, modified } map.
+ * account's datasets once and build a slug -> { id, modified } map. `mine=true` restricts the
+ * listing to the processing's own account: without it every public dataset of the platform is
+ * listed, and a dataset of another owner sharing a slug would be targeted for the update.
  */
 export type ExistingDataset = {
   id: string
   modified?: string
   owner?: { type?: string, id?: string, name?: string, department?: string }
   publicationSites?: string[]
+  isMetaOnly?: boolean
+  attachments?: DFAttachment[]
 }
 
 export const fetchExistingDatasetsBySlug = async (axios: any, log?: { warning: (msg: string) => any }): Promise<Map<string, ExistingDataset>> => {
@@ -203,10 +207,10 @@ export const fetchExistingDatasetsBySlug = async (axios: any, log?: { warning: (
   // owner + publicationSites are selected so the "publish" / "make public" actions can be applied
   // on the skip path (unchanged datasets) without an extra GET per dataset.
   while (true) {
-    const res = await dfRetry(() => axios.get(`api/v1/datasets?mine=true&size=${size}&page=${page}&select=id,slug,modified,owner,publicationSites`), log)
+    const res = await dfRetry(() => axios.get(`api/v1/datasets?mine=true&size=${size}&page=${page}&select=id,slug,modified,owner,publicationSites,isMetaOnly,attachments`), log)
     const results = res.data?.results ?? []
     for (const ds of results) {
-      if (ds.slug) bySlug.set(ds.slug, { id: ds.id, modified: ds.modified, owner: ds.owner, publicationSites: ds.publicationSites })
+      if (ds.slug) bySlug.set(ds.slug, { id: ds.id, modified: ds.modified, owner: ds.owner, publicationSites: ds.publicationSites, isMetaOnly: ds.isMetaOnly, attachments: ds.attachments })
     }
     const count = res.data?.count ?? 0
     if (results.length < size || page * size >= count) break
@@ -434,4 +438,73 @@ export const downloadCSV = async (descriptor: OdsDescriptor, context: Processing
     wrapped.code = error?.response?.status ?? error?.code
     throw wrapped
   }
+}
+
+/** Attachment entry of a Data-Fair dataset (`attachments` property), file or link. */
+export type DFAttachment = {
+  type?: string
+  name?: string
+  title: string
+  [k: string]: unknown
+}
+
+type OdsAttachment = NonNullable<OdsDataset['attachments']>[number]
+
+/**
+ * File name used for an ODS attachment once copied to Data-Fair. The ODS title usually is the
+ * original file name ("BP 2023.pdf"); when it has no extension the id is used instead, with the
+ * extension derived from the mime type. Path separators are replaced, the name is a file on disk.
+ */
+export const attachmentFileName = (att: OdsAttachment): string => {
+  const title = (att.title ?? '').trim()
+  let name = /\.[a-z0-9]{2,5}$/i.test(title) ? title : ''
+  if (!name) {
+    const ext = att.mimetype?.split('/')[1]?.split(';')[0]?.split('+')[0]
+    name = `${att.id ?? 'attachment'}${ext ? '.' + ext : ''}`
+  }
+  return name.replace(/[/\\]/g, '-')
+}
+
+/**
+ * Copy the ODS attachments of a dataset to Data-Fair metadata attachments, and list them in the
+ * dataset `attachments` property. Files already listed there under the same name are not
+ * uploaded again, and entries that do not come from ODS (links, files added by hand) are kept.
+ * Returns the number of uploaded files.
+ */
+export const syncAttachments = async (
+  axios: any,
+  odsAxios: any,
+  dfId: string,
+  odsAttachments: OdsAttachment[] | undefined,
+  existing: DFAttachment[] | undefined,
+  log?: { warning: (msg: string) => any }
+): Promise<number> => {
+  const current = existing ?? []
+  const known = new Set(current.filter(a => a.type === 'file' && a.name).map(a => a.name))
+  const added: DFAttachment[] = []
+  for (const att of odsAttachments ?? []) {
+    if (!att.url) continue
+    const name = attachmentFileName(att)
+    if (known.has(name)) continue
+    // A missing attachment must not fail a dataset whose data was imported: warn and go on.
+    try {
+      const res = await odsGet(odsAxios, att.url, { responseType: 'arraybuffer' }, { log })
+      const uploaded = await dfRetry(async () => {
+        const form = new FormData()
+        form.append('attachment', Buffer.from(res.data), { filename: name, contentType: att.mimetype || 'application/octet-stream' })
+        const length = await promisify(form.getLength.bind(form))()
+        return axios.post(`api/v1/datasets/${dfId}/metadata-attachments`, form, {
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+          headers: { ...form.getHeaders(), 'content-length': length.toString() }
+        })
+      }, log)
+      known.add(name)
+      added.push({ type: 'file', title: att.title || name, name, mimetype: uploaded.data?.mimetype ?? att.mimetype, size: uploaded.data?.size, updatedAt: uploaded.data?.updatedAt })
+    } catch (err: any) {
+      await log?.warning(`Pièce jointe ${att.url} non copiée : ${err.message}`)
+    }
+  }
+  if (added.length) await dfRetry(() => axios.patch(`api/v1/datasets/${dfId}`, { attachments: [...current, ...added] }), log)
+  return added.length
 }

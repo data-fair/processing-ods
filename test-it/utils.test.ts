@@ -1,6 +1,6 @@
 import { it, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeDescriptor, resolveSlugs, getMetadata, odsGet, withRetry429, stageLabelFor, createOdsAxios } from '../lib/utils.ts'
+import { normalizeDescriptor, resolveSlugs, getMetadata, odsGet, withRetry429, stageLabelFor, createOdsAxios, attachmentFileName, syncAttachments } from '../lib/utils.ts'
 import type { OdsDataset } from '../lib/types.ts'
 
 describe('normalizeDescriptor', () => {
@@ -235,5 +235,57 @@ describe('stageLabelFor', () => {
 
   it('labels the metadata-refresh stage as a Data-Fair metadata update, not ODS', () => {
     assert.equal(stageLabelFor('meta'), 'lors de la mise à jour des métadonnées dans Data-Fair')
+  })
+})
+
+describe('attachmentFileName', () => {
+  it('keeps the ODS title when it is a file name', () => {
+    assert.equal(attachmentFileName({ id: 'bp_2023_pdf', title: 'BP 2023.pdf', mimetype: 'application/pdf' }), 'BP 2023.pdf')
+  })
+
+  it('falls back to the id with an extension from the mime type', () => {
+    assert.equal(attachmentFileName({ id: 'notice', title: 'Notice explicative', mimetype: 'application/pdf' }), 'notice.pdf')
+  })
+
+  it('never produces a path', () => {
+    assert.equal(attachmentFileName({ id: 'x', title: 'a/b.csv' }), 'a-b.csv')
+  })
+})
+
+describe('syncAttachments', () => {
+  const silentLog = { warning: async () => {} }
+  const odsAxios = { get: async (url: string) => ({ data: Buffer.from(url) }) }
+
+  it('uploads only the missing files and keeps the entries not coming from ODS', async () => {
+    const posted: string[] = []
+    let patched: any
+    const axios = {
+      post: async (url: string) => { posted.push(url); return { data: { size: 3, mimetype: 'application/pdf' } } },
+      patch: async (_url: string, body: any) => { patched = body; return { data: {} } }
+    }
+    const ods = [
+      { id: 'a', title: 'A.pdf', url: 'http://ods/a', mimetype: 'application/pdf' },
+      { id: 'b', title: 'B.pdf', url: 'http://ods/b', mimetype: 'application/pdf' }
+    ]
+    const existing = [{ type: 'file', name: 'A.pdf', title: 'A.pdf' }, { type: 'url', title: 'Site', url: 'http://site' }]
+    const n = await syncAttachments(axios, odsAxios, 'ds1', ods, existing, silentLog)
+    assert.equal(n, 1)
+    assert.deepEqual(posted, ['api/v1/datasets/ds1/metadata-attachments'])
+    assert.deepEqual(patched.attachments.map((a: any) => a.name ?? a.url), ['A.pdf', 'http://site', 'B.pdf'])
+  })
+
+  it('does nothing when every attachment is already there', async () => {
+    const axios = { post: async () => { throw new Error('no upload expected') }, patch: async () => { throw new Error('no patch expected') } }
+    const n = await syncAttachments(axios, odsAxios, 'ds1', [{ id: 'a', title: 'A.pdf', url: 'http://ods/a' }], [{ type: 'file', name: 'A.pdf', title: 'A.pdf' }], silentLog)
+    assert.equal(n, 0)
+  })
+
+  it('warns instead of failing when a download fails', async () => {
+    const warnings: string[] = []
+    const failing = { get: async () => { const e: any = new Error('gone'); e.response = { status: 404 }; throw e } }
+    const axios = { post: async () => ({ data: {} }), patch: async () => ({ data: {} }) }
+    const n = await syncAttachments(axios, failing, 'ds1', [{ id: 'a', title: 'A.pdf', url: 'http://ods/a' }], [], { warning: async (m: string) => { warnings.push(m) } })
+    assert.equal(n, 0)
+    assert.equal(warnings.length, 1)
   })
 })

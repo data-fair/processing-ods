@@ -1,6 +1,6 @@
 import type { ProcessingContext, PrepareFunction } from '@data-fair/lib-common-types/processings.js'
 import type { ODSImportProcessingConfig as ProcessingConfig } from '#types/processingConfig/index.ts'
-import { fetchOdsDatasets, fetchOdsFacetValues, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV, odsGet, dfRetry, stageLabelFor, normalizeDescriptor, resolveSlugs, createOdsAxios } from './lib/utils.ts'
+import { fetchOdsDatasets, fetchOdsFacetValues, fetchExistingDatasetsBySlug, applyExposure, getMetadata, downloadCSV, odsGet, dfRetry, stageLabelFor, normalizeDescriptor, resolveSlugs, createOdsAxios, syncAttachments } from './lib/utils.ts'
 import { formatBytes } from '@data-fair/lib-utils/format/bytes.js'
 import { createReadStream, statSync } from 'fs'
 import { promisify } from 'util'
@@ -247,6 +247,37 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
     const title = descriptor.raw.metas?.default?.title ?? descriptor.cleanId
     const link = `${portalUrl}/explore/dataset/${descriptor.fullId}/information/`
 
+    // Image: if ODS exposes a thumbnail for this dataset, fetch it and attach it to the
+    // Data-Fair dataset (we don't keep an ODS-hosted URL, since the goal is a clean migration).
+    // Federated datasets only exist in the shared catalog, so their thumbnail lives there too.
+    const attachThumbnail = async (dfId: string) => {
+      const thumbUrl = descriptor.isFederated
+        ? `${portalUrl}/api/explore/v2.1/shared/datasets/${descriptor.fullId}/thumbnail`
+        : `${portalUrl}/api/explore/v2.1/catalog/datasets/${descriptor.cleanId}/thumbnail`
+      try {
+        const thumbRes = await odsGet(odsAxios, thumbUrl, { responseType: 'arraybuffer', validateStatus: (s: number) => s < 500 }, { log })
+        const ctRaw = thumbRes.headers?.['content-type']
+        const ct = typeof ctRaw === 'string' ? ctRaw : ''
+        if (thumbRes.status === 200 && ct.startsWith('image/')) {
+          const ext = ct.split('/')[1].split(';')[0].split('+')[0] || 'png'
+          const attachmentName = `thumbnail.${ext}`
+          await dfRetry(async () => {
+            const attachForm = new FormData()
+            attachForm.append('attachment', Buffer.from(thumbRes.data), { filename: attachmentName, contentType: ct })
+            const attachLen = await promisify(attachForm.getLength.bind(attachForm))()
+            return axios.post(`api/v1/datasets/${dfId}/metadata-attachments`, attachForm, {
+              maxContentLength: Infinity,
+              maxBodyLength: Infinity,
+              headers: { ...attachForm.getHeaders(), 'content-length': attachLen.toString() }
+            })
+          }, log)
+          await dfRetry(() => axios.patch(`api/v1/datasets/${dfId}`, { image: `api/v1/datasets/${dfId}/metadata-attachments/${attachmentName}` }), log)
+        }
+      } catch {
+        // Thumbnail not available or upload failed, skip silently
+      }
+    }
+
     const processDataset = async () => {
       // Tracks how far we got, so the error report can attribute the failure precisely.
       let stage: 'download' | 'upload' | 'meta' = 'download'
@@ -258,6 +289,35 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
         // Existing dataset (matched by slug during the initial indexing). When present, `existing.id`
         // is the Data-Fair-generated id — we reuse it, we never push an id of our own.
         const existing = existingBySlug.get(slug)
+
+        // ODS dataset without records (typically documents published as attachments only, e.g.
+        // budget PDFs): a CSV export would only contain a header, which Data-Fair rejects. It
+        // becomes a metadata-only dataset carrying the ODS attachments.
+        if (descriptor.raw.has_records === false) {
+          stage = 'meta'
+          const metaBody: Record<string, any> = { ...metadata, extras: { ...(metadata.extras ?? {}), processingId } }
+          delete metaBody.analysis
+          delete metaBody.schema
+          let dfId: string
+          let exposed: { id: string, owner?: any, publicationSites?: string[] }
+          if (existing) {
+            if (!existing.isMetaOnly) throw new Error('le jeu existant dans Data-Fair contient des données, supprimez-le pour qu\'il soit recréé en métadonnées seules')
+            delete metaBody.slug
+            await dfRetry(() => axios.patch(`api/v1/datasets/${existing.id}`, metaBody), log)
+            dfId = existing.id
+            exposed = { id: dfId, owner: existing.owner, publicationSites: existing.publicationSites }
+          } else {
+            const created = (await dfRetry(() => axios.post('api/v1/datasets', { ...metaBody, isMetaOnly: true }), log)).data
+            dfId = created.id
+            exposed = { id: dfId, owner: created.owner, publicationSites: created.publicationSites }
+            await attachThumbnail(dfId)
+          }
+          const uploaded = await syncAttachments(axios, odsAxios, dfId, descriptor.raw.attachments, existing?.attachments, log)
+          if (exposureRequested) await applyExposure(axios, log, exposed, exposure)
+          await log.info(`${existing ? 'Mise à jour' : 'Création'} réussie (métadonnées seules, ${uploaded} pièce(s) jointe(s) ajoutée(s)): ${metadata.title || slug} (ID: ${dfId})`)
+          results.push({ datasetId: descriptor.fullId, title, link, success: true, federated: descriptor.isFederated, dfId })
+          return
+        }
 
         // Incremental import: when the dataset already exists and the ODS "modified" date is
         // unchanged, skip the (expensive) download and only refresh the metadata, so mapping
@@ -271,6 +331,7 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
           delete metaOnly.schema
           delete metaOnly.slug
           await dfRetry(() => axios.patch(`api/v1/datasets/${existing.id}`, metaOnly), log)
+          await syncAttachments(axios, odsAxios, existing.id, descriptor.raw.attachments, existing.attachments, log)
           if (exposureRequested) await applyExposure(axios, log, { id: existing.id, owner: existing.owner, publicationSites: existing.publicationSites }, exposure)
           await log.info(`Inchangé (modified ${metadata.modified}) — métadonnées mises à jour, téléchargement ignoré: ${metadata.title || slug}`)
           results.push({ datasetId: descriptor.fullId, title, link, success: true, skipped: true, federated: descriptor.isFederated, dfId: existing.id })
@@ -310,34 +371,8 @@ const runImport = async (context: ProcessingContext<ProcessingConfig>) => {
         const result = await uploadResponse.data
         await log.info(`${existing ? 'Mise à jour' : 'Création'} réussie: ${result.title} (ID: ${result.id})`)
 
-        // Image: if ODS exposes a thumbnail for this dataset, fetch it and attach it to the
-        // Data-Fair dataset (we don't keep an ODS-hosted URL, since the goal is a clean migration).
-        // Federated datasets only exist in the shared catalog, so their thumbnail lives there too.
-        const thumbUrl = descriptor.isFederated
-          ? `${portalUrl}/api/explore/v2.1/shared/datasets/${descriptor.fullId}/thumbnail`
-          : `${portalUrl}/api/explore/v2.1/catalog/datasets/${descriptor.cleanId}/thumbnail`
-        try {
-          const thumbRes = await odsGet(odsAxios, thumbUrl, { responseType: 'arraybuffer', validateStatus: (s: number) => s < 500 }, { log })
-          const ctRaw = thumbRes.headers?.['content-type']
-          const ct = typeof ctRaw === 'string' ? ctRaw : ''
-          if (thumbRes.status === 200 && ct.startsWith('image/')) {
-            const ext = ct.split('/')[1].split(';')[0].split('+')[0] || 'png'
-            const attachmentName = `thumbnail.${ext}`
-            await dfRetry(async () => {
-              const attachForm = new FormData()
-              attachForm.append('attachment', Buffer.from(thumbRes.data), { filename: attachmentName, contentType: ct })
-              const attachLen = await promisify(attachForm.getLength.bind(attachForm))()
-              return axios.post(`api/v1/datasets/${result.id}/metadata-attachments`, attachForm, {
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity,
-                headers: { ...attachForm.getHeaders(), 'content-length': attachLen.toString() }
-              })
-            }, log)
-            await dfRetry(() => axios.patch(`api/v1/datasets/${result.id}`, { image: `api/v1/datasets/${result.id}/metadata-attachments/${attachmentName}` }), log)
-          }
-        } catch {
-          // Thumbnail not available or upload failed, skip silently
-        }
+        await attachThumbnail(result.id)
+        await syncAttachments(axios, odsAxios, result.id, descriptor.raw.attachments, result.attachments, log)
 
         if (exposureRequested) await applyExposure(axios, log, { id: result.id, owner: result.owner, publicationSites: result.publicationSites }, exposure)
 
